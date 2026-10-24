@@ -11,7 +11,8 @@ Rendered with three.js (WebGL); falls back to the original pixel-art Canvas rend
 | Double-height jump | press `J` twice | tap `J` twice |
 | Punch | `P` | `P` button |
 | Pause | `Esc` | ⏸ button (top-left) |
-| Mute music & sound | `M` | — |
+| Music on/off | `M` | ♫ button (top-left) |
+| Sound effects on/off | `S` | speaker button (top-left) |
 
 Hop on/off crates, bonk `?` blocks for coins, smash bricks, stomp the purple Blorbs, and reach the flag.
 

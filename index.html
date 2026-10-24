@@ -53,7 +53,7 @@
 // Constants
 // ============================================================================
 const TS = 16, LH = 15, LW = 212, VH = 240;
-const VERSION = 'V2.1';                 // shown on the title screen; bump on each release
+const VERSION = 'V2.2';                 // shown on the title screen; bump on each release
 const STEP = 1 / 120;                    // fixed physics step (render is interpolated)
 const GRAV = 1500, JUMP_V = 470, STOMP_V = 330, MAX_FALL = 520;
 const ACC = 700, DEC = 900, AIR_DEC = 400, MAX_VX = 140;
@@ -320,13 +320,19 @@ const CASTLE = paint(80, 96, g => {
 // ============================================================================
 // Audio (tiny WebAudio synth, created on first user gesture)
 // ============================================================================
-let AC = null, muted = false;
+let AC = null, musicOn = true, sfxOn = true;     // music and sound effects mute independently
+try { musicOn = localStorage.getItem('jumpgame.music') !== '0'; sfxOn = localStorage.getItem('jumpgame.sfx') !== '0'; } catch (e) {}
+function toggleSound(which) {
+  if (which === 'music') musicOn = !musicOn; else sfxOn = !sfxOn;
+  try { localStorage.setItem('jumpgame.music', musicOn ? '1' : '0'); localStorage.setItem('jumpgame.sfx', sfxOn ? '1' : '0'); } catch (e) {}
+  showToast(which === 'music' ? (musicOn ? 'MUSIC ON' : 'MUSIC OFF') : (sfxOn ? 'SOUND FX ON' : 'SOUND FX OFF'), 1.5);
+}
 function initAudio() {
   if (AC) { if (AC.state === 'suspended') AC.resume(); return; }
   try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; }
 }
 function tone(f0, f1, dur, type = 'square', vol = .07, delay = 0) {
-  if (!AC || muted) return;
+  if (!AC || !sfxOn) return;
   const t = AC.currentTime + delay, o = AC.createOscillator(), g = AC.createGain();
   o.type = type; o.frequency.setValueAtTime(f0, t);
   if (f1) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
@@ -431,7 +437,7 @@ function stopMusic() {
   music.gain.gain.linearRampToValueAtTime(0, t + .05);
 }
 function syncMusic() {
-  const want = (state === 'play' || state === 'remote') && !muted && AC && AC.state === 'running';
+  const want = (state === 'play' || state === 'remote') && musicOn && AC && AC.state === 'running';
   if (want && !music.on) startMusic(); else if (!want && music.on) stopMusic();
   music.speed = time < 100 ? 1.3 : 1;                 // "hurry up!" when time is low
 }
@@ -449,7 +455,8 @@ addEventListener('keydown', e => {
   if (e.repeat) return;
   keys[e.code] = true;
   if (e.code === 'KeyJ' || (e.code === 'Enter' && state !== 'play')) jQueue = true;
-  if (e.code === 'KeyM') muted = !muted;
+  if (e.code === 'KeyM') toggleSound('music');
+  if (e.code === 'KeyS') toggleSound('sfx');
   if (e.code === 'KeyP') pQueue = true;
   if (e.code === 'Escape') togglePause();
   if (e.code === 'KeyN' && state === 'title') renamePlayer();
@@ -483,11 +490,15 @@ for (const b of touchEl.querySelectorAll('.tb')) {
 }
 // on-screen pause button (top-left, under the score) — works with mouse and touch
 const PAUSE_BTN = { x: 6, y: 30, w: 18, h: 18 };
+const MUSIC_BTN = { x: 28, y: 30, w: 18, h: 18 }, SFX_BTN = { x: 50, y: 30, w: 18, h: 18 };
+const inBtn = (b, x, y, pad = 3) => x > b.x - pad && x < b.x + b.w + pad && y > b.y - pad && y < b.y + b.h + pad;
 cvs.addEventListener('pointerdown', e => {
   initAudio();
   const r = cvs.getBoundingClientRect();
   const x = (e.clientX - r.left) * VW / r.width, y = (e.clientY - r.top) * VH / r.height;
-  const onPause = x < PAUSE_BTN.x + PAUSE_BTN.w + 10 && y < PAUSE_BTN.y + PAUSE_BTN.h + 10;
+  if (inBtn(MUSIC_BTN, x, y)) return toggleSound('music');
+  if (inBtn(SFX_BTN, x, y)) return toggleSound('sfx');
+  const onPause = x < PAUSE_BTN.x + PAUSE_BTN.w + 2 && y < PAUSE_BTN.y + PAUSE_BTN.h + 10;
   if (state === 'title' || state === 'over' || state === 'clear') jQueue = true;
   else if (state === 'paused') togglePause();
   else if (state === 'play' && onPause) togglePause();
@@ -1120,6 +1131,21 @@ function drawHUD() {
     else for (let i = 0; i < 5; i++) ctx.fillRect(x + 6 + i, y + 4 + i, 1, 10 - i * 2);   // play triangle
   }
 }
+function drawSoundButtons() {
+  const btn = (b, on, icon) => {
+    ctx.fillStyle = 'rgba(20,10,40,.45)'; ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = '#fff'; icon(b.x, b.y);
+    if (!on) { ctx.fillStyle = '#ff3a3a'; for (let i = 0; i < 14; i++) ctx.fillRect(b.x + 2 + i, b.y + 2 + i, 2, 2); }
+  };
+  btn(MUSIC_BTN, musicOn, (x, y) => {                      // two beamed notes
+    ctx.fillRect(x + 6, y + 4, 8, 2); ctx.fillRect(x + 6, y + 4, 2, 9); ctx.fillRect(x + 12, y + 4, 2, 8);
+    ctx.fillRect(x + 4, y + 11, 4, 3); ctx.fillRect(x + 10, y + 10, 4, 3);
+  });
+  btn(SFX_BTN, sfxOn, (x, y) => {                          // speaker + sound waves
+    ctx.fillRect(x + 3, y + 7, 3, 4); for (let i = 0; i < 4; i++) ctx.fillRect(x + 6 + i, y + 6 - i, 1, 6 + i * 2);
+    ctx.fillRect(x + 12, y + 7, 1, 4); ctx.fillRect(x + 14, y + 5, 1, 8);
+  });
+}
 
 function panel(w, h) {
   const x = Math.round((VW - w) / 2), y = Math.round((VH - h) / 2) - 10;
@@ -1135,13 +1161,14 @@ function drawOverlay() {
   const blink = Math.floor(gameT * 2.5) % 2 === 0;
   const startMsg = isTouch ? 'TAP J TO START' : 'PRESS J TO START';
   if (state === 'title') {
-    const { y } = panel(Math.min(VW - 24, 232), 104);
+    const { y } = panel(Math.min(VW - 24, 232), 112);
     drawText('JUMP GAME', VW / 2, y + 14, '#ffe14a', 'center', 16);
     drawText(VERSION, VW - 6, VH - 12, 'rgba(255,255,255,.7)', 'right');
     drawText('ARROWS  MOVE', VW / 2, y + 42, '#fff', 'center');
     drawText('J  JUMP', VW / 2, y + 54, '#fff', 'center');
     drawText('J J  DOUBLE JUMP', VW / 2, y + 66, '#fff', 'center');
     drawText(isTouch ? 'P  PUNCH   II  PAUSE' : 'P  PUNCH   ESC  PAUSE', VW / 2, y + 78, '#fff', 'center');
+    drawText(isTouch ? 'TAP ICONS FOR SOUND' : 'M  MUSIC   S  SOUND FX', VW / 2, y + 90, '#fff', 'center');
     if (blink) drawText(startMsg, VW / 2, y + 116, '#fff', 'center');
     if (hiScore) drawText('TOP ' + pad(hiScore, 6), VW / 2, y + 130, '#ffe14a', 'center');
     const net = NET.status === 'online' ? (NET.peers.size ? (NET.peers.size + 1) + ' PLAYERS ONLINE' : 'ONLY YOU ONLINE RIGHT NOW')
@@ -1175,6 +1202,7 @@ function drawOverlay() {
     drawText('GHOST MODE: YOU ARE ON ' + NET.hostName + "'S SCREEN", VW / 2, VH - 29, '#ffe14a', 'center');
     drawText(NET.ghost ? 'JUMP IN A PORTAL THERE TO COME HOME' : 'CONNECTING...', VW / 2, VH - 16, '#e0c8ff', 'center');
   }
+  drawSoundButtons();
   if (koBanner) {
     const k = Math.min(1, (2 - koBanner.t) * 6), sz = Math.round(16 + 16 * k);
     drawText(koBanner.s, VW / 2 + 2, VH / 2 - 40 + 2, '#1a1020', 'center', sz);
