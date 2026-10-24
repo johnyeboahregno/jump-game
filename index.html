@@ -305,7 +305,7 @@ const FLAG = paint(16, 15, g => {
   for (const [x, y] of [[10, 5], [9, 6], [10, 6], [11, 6], [8, 7], [9, 7], [10, 7], [11, 7], [12, 7], [9, 8], [10, 8], [11, 8], [10, 9]]) px(g, '#ffffff', x, y);
 });
 
-// ---------------------------------------------------------------- network portal (animated swirl)
+// ---------------------------------------------------------------- warp swirl (shown while warping)
 const PORTAL = [0, 1, 2, 3, 4, 5].map(f => paint(20, 34, g => {
   const cols = ['#2a0a5a', '#5a1ab8', '#8a4af0', '#c49aff', '#f0e0ff'];
   for (let y = 0; y < 34; y++) for (let x = 0; x < 20; x++) {
@@ -677,7 +677,7 @@ try { hiScore = +localStorage.getItem('jumpgame.hi') || 0; } catch (e) {}
 function resetPlayer() {
   const sx = checkpoint ? CHECKPOINT_X * TS : 3 * TS;
   p = { x: sx, y: 12 * TS, w: 12, h: 16, vx: 0, vy: 0, px: sx, py: 12 * TS, onGround: false, face: 1,
-        jumps: 0, coyote: 0, buffer: 0, anim: 0, spin: 0, dead: false, visible: true, phase: 0, portalCD: 0, jHeld: false, ...FIGHT_FIELDS() };
+        jumps: 0, coyote: 0, buffer: 0, anim: 0, spin: 0, dead: false, visible: true, phase: 0, jHeld: false, ...FIGHT_FIELDS() };
   camX = prevCamX = clamp(p.x - VW * .42, 0, LW * TS - VW);
 }
 function startLevel() { buildLevel(); resetPlayer(); time = 300; flagY = 3 * TS; if (guest) spawnGuest(); }
@@ -1305,11 +1305,10 @@ function drawOverlay() {
 }
 
 // ============================================================================
-// Network portals. Devices on the same network (same public IPv4 address) join
-// the same room on a public MQTT relay; the IP is only used, hashed, as a room key.
-// Walking into a portal hands your hero to another player's screen, and your own
-// device turns into its controller until you portal back or run out of lives.
-// Add ?room=anything to the URL to group devices that are on different networks.
+// Warp pipes. Everyone playing joins one lobby on a public MQTT relay (or a private
+// one with ?room=). Each other player online gets a coloured warp pipe; going DOWN it
+// hands your hero to that player's screen, and your own device turns into its
+// controller (showing a ghost of your hero) until you press X or run out of lives.
 // ============================================================================
 const BROKER = 'wss://broker.emqx.io:8084/mqtt';
 const MQTT_LIB = 'https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js';
@@ -1387,7 +1386,7 @@ function wireChannel(id, dc) {
     if (m && typeof m === 'object' && (m.t === 'in' || m.t === 'gstate')) { m.from = id; onNet('direct', m); }
   };
 }
-async function openLink(id) {                       // the player who walked into the portal
+async function openLink(id) {                       // the player who went down the warp pipe
   if (!window.RTCPeerConnection) return;
   try {
     closeLink(id);
@@ -1646,7 +1645,7 @@ function sendGuestHome(reason) {
   guest = null;
 }
 addEventListener('pagehide', () => {
-  if (guest) sendGuestHome('portal');
+  if (guest) sendGuestHome('leave');
   if (state === 'remote' || state === 'porting') sendTo(NET.host, { t: 'leave' });
   netPub(NET.base + '/presence', { t: 'bye' });
 });
