@@ -13,7 +13,6 @@
   :root { --btn-bg: rgba(255,255,255,.18); --btn-border: rgba(255,255,255,.55); }
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none;
     touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-  #gl { image-rendering: auto; }
   canvas { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
     image-rendering: pixelated; image-rendering: crisp-edges; outline: none; }
   #touch { position: fixed; left: 0; right: 0; bottom: 0; display: none; justify-content: space-between;
@@ -34,7 +33,6 @@
 </style>
 </head>
 <body>
-<canvas id="gl" style="display:none"></canvas>
 <canvas id="game" tabindex="0"></canvas>
 <div id="touch">
   <div class="pad">
@@ -46,14 +44,13 @@
     <button class="tb j" data-k="KeyJ" aria-label="Jump">J</button>
   </div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
 <script>
 'use strict';
 // ============================================================================
 // Constants
 // ============================================================================
 const TS = 16, LH = 15, LW = 212, VH = 240;
-const VERSION = 'V2.2';                 // shown on the title screen; bump on each release
+const VERSION = 'V2.3';                 // shown on the title screen; bump on each release
 const STEP = 1 / 120;                    // fixed physics step (render is interpolated)
 const GRAV = 1500, JUMP_V = 470, STOMP_V = 330, MAX_FALL = 520;
 const ACC = 700, DEC = 900, AIR_DEC = 400, MAX_VX = 140;
@@ -597,7 +594,6 @@ function buildLevel() {
   for (let x = 20; x < LW * TS * .5 + 480; x += 90 + rnd() * 110) clouds.push({ x, y: 14 + Math.floor(rnd() * 56) });
 
   buildTileLayer();
-  if (R3.ok) build3DLevel();
 }
 
 function tileImage(t, x, y) {
@@ -634,7 +630,6 @@ function changeTile(x, y, t) {
   grid[y][x] = t;
   drawTileInto(tileLayerCtx, x, y);
   if (y + 1 < LH) drawTileInto(tileLayerCtx, x, y + 1);   // grass edge may change
-  tileChanged3D(x, y, t);
 }
 
 // ============================================================================
@@ -973,7 +968,6 @@ function resize() {
   const si = Math.floor(s);
   const scale = si >= 2 && s - si < .15 ? si : s;
   cvs.style.width = VW * scale + 'px'; cvs.style.height = VH * scale + 'px';
-  resize3D();
   ctx.imageSmoothingEnabled = false;
   skyGrad = ctx.createLinearGradient(0, 0, 0, VH);
   skyGrad.addColorStop(0, '#4a86f4'); skyGrad.addColorStop(.7, '#8cc0ff'); skyGrad.addColorStop(1, '#b8dcff');
@@ -1558,384 +1552,6 @@ addEventListener('pagehide', () => {
 });
 
 // ============================================================================
-// "64-bit" renderer: a 2.5D low-poly scene drawn with three.js, N64 style.
-// Game logic is unchanged (still a 2D side-scroller); this only replaces how the
-// world is drawn. The 2D canvas above stays on top for the HUD and overlays.
-// Falls back to the pixel renderer if WebGL/three.js isn't available.
-// World units: 1 tile = 1 unit, X = px / TS, Y = LH - py / TS (so up is +Y).
-// ============================================================================
-const R3 = { ok: false };
-const wX = x => x / TS, wY = y => LH - y / TS;
-
-function init3D() {
-  if (!window.THREE) return;
-  try {
-    const glc = document.getElementById('gl');
-    const renderer = new THREE.WebGLRenderer({ canvas: glc, antialias: true, powerPreference: 'high-performance' });
-    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    const scene = new THREE.Scene();
-    const sky = cv(2, 256), sg = sky.getContext('2d'), gr = sg.createLinearGradient(0, 0, 0, 256);
-    gr.addColorStop(0, '#3f7ff0'); gr.addColorStop(.65, '#8cc0ff'); gr.addColorStop(1, '#cfe8ff');
-    sg.fillStyle = gr; sg.fillRect(0, 0, 2, 256);
-    scene.background = new THREE.CanvasTexture(sky); scene.background.colorSpace = THREE.SRGBColorSpace;
-    scene.fog = new THREE.Fog(0xbfe0ff, 40, 110);
-    const cam = new THREE.PerspectiveCamera(38, VW / VH, .5, 200);
-    scene.add(new THREE.HemisphereLight(0xdcefff, 0x6a4a2a, 2.4));
-    const sun = new THREE.DirectionalLight(0xfff4e0, 3);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 1024);
-    Object.assign(sun.shadow.camera, { left: -17, right: 17, top: 10, bottom: -10, near: 1, far: 60 });
-    sun.shadow.bias = -.0008;
-    scene.add(sun, sun.target);
-    Object.assign(R3, { ok: true, renderer, scene, cam, sun, glc,
-      dist: (VH / TS / 2 + .3) / Math.tan(THREE.MathUtils.degToRad(19)) });
-    R3.hero = makeHero3D(HERO_PAL);
-    R3.guestHero = makeHero3D({ ...HERO_PAL, C: '#e8408a', c: '#a01a5a', T: '#3ac0ff', t: '#1a7ac8', Y: '#ffffff' });
-    R3.ghostHero = makeHero3D(HERO_PAL, .6);
-    R3.ghostHero.root.traverse(o => { o.castShadow = false; });
-    scene.add(R3.hero.root, R3.guestHero.root, R3.ghostHero.root);
-    R3.enemyModels = new Map();
-    // particles: one instanced mesh, coloured per instance
-    R3.parts = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial(), 500);
-    R3.parts.frustumCulled = false; R3.parts.count = 0;
-    R3.parts.setColorAt(0, new THREE.Color());
-    scene.add(R3.parts);
-    glc.style.display = 'block';
-  } catch (e) { console.warn('3D renderer unavailable, using 2D', e); R3.ok = false; }
-}
-function resize3D() {
-  if (!R3.ok) return;
-  R3.glc.style.width = cvs.style.width; R3.glc.style.height = cvs.style.height;
-  R3.renderer.setSize(parseFloat(cvs.style.width), parseFloat(cvs.style.height), false);
-  R3.cam.aspect = VW / VH; R3.cam.updateProjectionMatrix();
-}
-
-// ---- materials (textures are the pixel tiles upscaled 4x = 64x64, filtered N64-style)
-function tex3(src, rx = 1, ry = 1) {
-  const c = cv(src.width * 4, src.height * 4), g = c.getContext('2d');
-  g.imageSmoothingEnabled = false; g.drawImage(src, 0, 0, c.width, c.height);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
-  return t;
-}
-const lam = o => new THREE.MeshLambertMaterial(o);
-const box3 = (w, h, d, m, x = 0, y = 0, z = 0) => {
-  const o = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); o.position.set(x, y, z); o.castShadow = true; o.receiveShadow = true; return o;
-};
-const sph3 = (r, m, x = 0, y = 0, z = 0, ws = 14, hs = 10) => {
-  const o = new THREE.Mesh(new THREE.SphereGeometry(r, ws, hs), m); o.position.set(x, y, z); o.castShadow = true; return o;
-};
-let M3 = null;
-function mats3() {
-  if (M3) return M3;
-  const grass = paint(16, 16, g => {
-    px(g, '#46c040', 0, 0, 16, 16);
-    for (const [x, y] of [[2, 3], [9, 1], [13, 9], [5, 12], [11, 5], [1, 9], [7, 7], [14, 14]]) { px(g, '#7ae060', x, y, 2, 1); px(g, '#2e9a30', x + 1, y + 1); }
-  });
-  M3 = {
-    dirt: lam({ map: tex3(TILE.ground) }), grassSide: lam({ map: tex3(TILE.groundTop) }), grassTop: lam({ map: tex3(grass) }),
-    brick: lam({ map: tex3(TILE.brick) }), used: lam({ map: tex3(TILE.used) }), crate: lam({ map: tex3(TILE.crate) }),
-    hard: lam({ map: tex3(TILE.hard) }), q: lam({ map: tex3(TILE.q[0]), emissive: 0x5a3a00 }),
-    qTex: TILE.q.map(t => tex3(t)),
-    pipe: new THREE.MeshStandardMaterial({ color: 0x2eb02e, roughness: .35, metalness: .1 }),
-    pipeLip: new THREE.MeshStandardMaterial({ color: 0x3cc83c, roughness: .3, metalness: .1 }),
-    coin: new THREE.MeshStandardMaterial({ color: 0xffd040, metalness: .25, roughness: .35, emissive: 0xb07800, emissiveIntensity: .6 }),
-  };
-  return M3;
-}
-
-// ---- static scenery (built once: hills, clouds, bushes, castle, flag, portals, meadow)
-function build3DStatic() {
-  const S = R3.scene, m = mats3();
-  const meadow = new THREE.Mesh(new THREE.PlaneGeometry(LW + 400, 120), lam({ color: 0x6cc860 }));
-  meadow.rotation.x = -Math.PI / 2; meadow.position.set(LW / 2, 1.96, -68); meadow.receiveShadow = true; S.add(meadow);
-  const abyss = new THREE.Mesh(new THREE.PlaneGeometry(LW + 400, 20), lam({ color: 0x1a1030 }));
-  abyss.rotation.x = -Math.PI / 2; abyss.position.set(LW / 2, -2, -4); S.add(abyss);
-  const hillGeo = r => new THREE.SphereGeometry(r, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2);
-  const hillMat = lam({ color: 0x3cb04a, flatShading: true }), farMat = lam({ color: 0x8fd6a8, flatShading: true });
-  const bushMat = lam({ color: 0x48c43a, flatShading: true }), cloudMat = lam({ color: 0xffffff, emissive: 0x9ab8d8, flatShading: true });
-  let seed = 5; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  for (let x = -20; x < LW + 60; x += 18 + rnd() * 16) {          // far rolling hills
-    const h = new THREE.Mesh(hillGeo(7 + rnd() * 7), farMat); h.position.set(x, 1.9, -34 - rnd() * 14); h.scale.y = .55 + rnd() * .3; S.add(h);
-  }
-  for (const d of decos) {
-    const X = wX(d.x + d.img.width / 2);
-    if (d.img === BUSH) {
-      for (const [ox, r] of [[-.7, .5], [0, .7], [.7, .5]]) { const b = sph3(r, bushMat, X + ox, 2.05, -1.6, 8, 6); b.scale.y = .8; S.add(b); }
-    } else {
-      const big = d.img === HILL, h = new THREE.Mesh(hillGeo(big ? 3.4 : 2.3), hillMat);
-      h.position.set(X, 1.95, -5.5 - rnd() * 1.5); h.scale.y = big ? .85 : .9; h.receiveShadow = true; S.add(h);
-    }
-  }
-  for (const c of clouds) {
-    const g = new THREE.Group();
-    for (const [ox, oy, r] of [[-1.4, 0, 1], [0, .5, 1.4], [1.4, 0, 1], [.2, -.3, 1.1]]) g.add(sph3(r, cloudMat, ox, oy, 0, 8, 6));
-    g.position.set(wX(c.x) * 2, 13 + (c.y / 80) * 4, -26 - (c.y % 7)); g.scale.y = .75; S.add(g);
-  }
-  // castle
-  const castle = new THREE.Group(), cb = (w, h, d, x, y, z) => castle.add(box3(w, h, d, lam({ map: tex3(TILE.brick, w, h) }), x, y, z));
-  cb(5, 3, 3, 2.5, 1.5, -1); cb(3, 2, 2.4, 2.5, 4, -1.2);
-  for (let i = 0; i < 5; i++) cb(.5, .5, 3, .25 + i * 1.12, 3.25, -1);
-  for (let i = 0; i < 3; i++) cb(.5, .5, 2.4, 1.25 + i * 1, 5.25, -1.2);
-  castle.add(box3(1, 1.7, .1, lam({ color: 0x000000 }), 2.5, .85, .52), box3(.4, .7, .1, lam({ color: 0x000000 }), 2, 4.2, .02), box3(.4, .7, .1, lam({ color: 0x000000 }), 3, 4.2, .02));
-  castle.position.set(CASTLE_X, 2, 0); S.add(castle);
-  // flag pole + flag
-  const poleMat = new THREE.MeshStandardMaterial({ color: 0x9ce07a, roughness: .4 });
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(.06, .06, 10, 8), poleMat); pole.position.set(FLAGX + .5, 8, 0); pole.castShadow = true; S.add(pole);
-  S.add(sph3(.22, m.coin, FLAGX + .5, 13.2, 0));
-  const tri = new THREE.Shape(); tri.moveTo(0, 0); tri.lineTo(-1.1, .47); tri.lineTo(0, .94); tri.lineTo(0, 0);
-  R3.flag = new THREE.Mesh(new THREE.ShapeGeometry(tri), lam({ color: 0x22c04a, side: THREE.DoubleSide }));
-  R3.flag.castShadow = true; S.add(R3.flag);
-  // portals: glowing ring + animated swirl
-  R3.portalTex = PORTAL.map(c => { const t = tex3(c); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; return t; });
-  R3.portalMat = new THREE.MeshBasicMaterial({ map: R3.portalTex[0], transparent: true, alphaTest: .5 });
-  const ringMat = new THREE.MeshStandardMaterial({ color: 0x8a4af0, emissive: 0x6a2ad8, emissiveIntensity: .8, roughness: .3 });
-  R3.portals = PORTALS.map(tx => {
-    const g = new THREE.Group();
-    const disc = new THREE.Mesh(new THREE.PlaneGeometry(1.25, 2.12), R3.portalMat);
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(.62, .09, 8, 28), ringMat); ring.scale.y = 1.72; ring.castShadow = true;
-    const glow = new THREE.PointLight(0xb070ff, 6, 5, 1.5);
-    g.add(disc, ring, glow); g.position.set(tx + .5, 3.06, 0); S.add(g);
-    return g;
-  });
-}
-
-// ---- per-level geometry: instanced tiles, pipes, coins
-function build3DLevel() {
-  if (!R3.ok) return;
-  const m = mats3(), S = R3.scene;
-  if (!R3.staticBuilt) { build3DStatic(); R3.staticBuilt = true; }   // needs decos/clouds from the first level
-  if (R3.levelGroup) {
-    S.remove(R3.levelGroup);
-    R3.levelGroup.traverse(o => { if (o.isInstancedMesh) o.dispose(); if (o.geometry) o.geometry.dispose(); });
-  }
-  const G = R3.levelGroup = new THREE.Group(); S.add(G);
-  const lists = { top: [], dirt: [], [BRICK]: [], [QBLOCK]: [], [USED]: [], [CRATE]: [], [HARD]: [] };
-  for (let y = 0; y < LH; y++) for (let x = 0; x < LW; x++) {
-    const t = grid[y][x];
-    if (t === GROUND) lists[getT(x, y - 1) === GROUND ? 'dirt' : 'top'].push([x, y]);
-    else if (lists[t]) lists[t].push([x, y]);
-  }
-  const geo = new THREE.BoxGeometry(1, 1, 1);
-  const mk = (key, mat, cap, depth, z) => {
-    const mesh = new THREE.InstancedMesh(geo, mat, Math.max(1, cap));
-    Object.assign(mesh.userData, { depth, z, free: [] });
-    mesh.castShadow = mesh.receiveShadow = true; mesh.frustumCulled = false;
-    for (let i = 0; i < mesh.count; i++) { setInst(mesh, i, 0, 0, 0, true); mesh.userData.free.push(i); }
-    mesh.userData.free.reverse(); G.add(mesh); return mesh;
-  };
-  R3.slots = new Map();
-  R3.byType = {
-    top: mk('top', [m.grassSide, m.grassSide, m.grassTop, m.dirt, m.grassSide, m.grassSide], lists.top.length, 8, -3.5),
-    dirt: mk('dirt', m.dirt, lists.dirt.length, 8, -3.5),
-    [BRICK]: mk(BRICK, m.brick, lists[BRICK].length, 1, 0),
-    [QBLOCK]: mk(QBLOCK, m.q, lists[QBLOCK].length, 1, 0),
-    [USED]: mk(USED, m.used, lists[USED].length + lists[QBLOCK].length, 1, 0),
-    [CRATE]: mk(CRATE, m.crate, lists[CRATE].length, 1, 0),
-    [HARD]: mk(HARD, m.hard, lists[HARD].length, 1, 0),
-  };
-  for (const key in lists) for (const [x, y] of lists[key]) placeTile3D(R3.byType[key], x, y);
-  // pipes
-  for (let y = 0; y < LH; y++) for (let x = 0; x < LW; x++) if (grid[y][x] === PIPE_TL) {
-    const h = 13 - y;
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(.82, .82, h - .45, 22), m.pipe);
-    body.position.set(x + 1, 2 + (h - .45) / 2, 0);
-    const lip = new THREE.Mesh(new THREE.CylinderGeometry(.98, .98, .5, 22), m.pipeLip);
-    lip.position.set(x + 1, 2 + h - .25, 0);
-    const hole = new THREE.Mesh(new THREE.CircleGeometry(.78, 22), lam({ color: 0x0a2a0a }));
-    hole.rotation.x = -Math.PI / 2; hole.position.set(x + 1, 2 + h + .005, 0);
-    for (const o of [body, lip]) { o.castShadow = o.receiveShadow = true; }
-    G.add(body, lip, hole);
-  }
-  // coins
-  R3.coins = new THREE.InstancedMesh(new THREE.CylinderGeometry(.32, .32, .08, 18), m.coin, Math.max(1, coins.length));
-  R3.coins.castShadow = true; R3.coins.frustumCulled = false; G.add(R3.coins);
-  R3.bumped = new Set();
-}
-const _o3 = { pos: null };
-function setInst(mesh, i, x, y, off, hide) {
-  const d = _o3.pos || (_o3.pos = new THREE.Object3D());
-  d.position.set(x + .5, LH - y - .5 + off, mesh.userData.z);
-  d.rotation.set(0, 0, 0);
-  const s = hide ? 0 : 1; d.scale.set(s, s, hide ? 0 : mesh.userData.depth);
-  d.updateMatrix(); mesh.setMatrixAt(i, d.matrix); mesh.instanceMatrix.needsUpdate = true;
-}
-function placeTile3D(mesh, x, y) {
-  const i = mesh.userData.free.pop();
-  if (i === undefined) return;
-  setInst(mesh, i, x, y, 0, false);
-  R3.slots.set(y * LW + x, { mesh, i });
-}
-function tileChanged3D(x, y, t) {
-  if (!R3.ok || !R3.slots) return;
-  const key = y * LW + x, old = R3.slots.get(key);
-  if (old) { setInst(old.mesh, old.i, x, y, 0, true); old.mesh.userData.free.push(old.i); R3.slots.delete(key); }
-  const mesh = R3.byType[t];
-  if (mesh) placeTile3D(mesh, x, y);
-}
-
-// ---- characters
-function makeHero3D(pal, opacity = 1) {
-  const mat = c => opacity < 1 ? lam({ color: c, transparent: true, opacity, emissive: 0x8a60e0, emissiveIntensity: .6, depthWrite: false }) : lam({ color: c });
-  const skin = mat(pal.S), hood = mat(pal.T), pants = mat(pal.P), boots = mat(pal.O), cap = mat(pal.C), dark = mat('#1a1020'), hair = mat(pal.H), zip = mat(pal.Y);
-  const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
-  const limb = (x, y) => { const g = new THREE.Group(); g.position.set(x, y, 0); body.add(g); return g; };
-  const legL = limb(-.1, .38), legR = limb(.1, .38);
-  for (const l of [legL, legR]) l.add(box3(.15, .26, .17, pants, 0, -.13, 0), box3(.19, .1, .27, boots, 0, -.31, .04));
-  body.add(box3(.42, .36, .28, hood, 0, .56, 0), box3(.05, .22, .02, zip, 0, .56, .15));
-  const armL = limb(-.28, .7), armR = limb(.28, .7);
-  for (const a of [armL, armR]) a.add(box3(.12, .3, .12, hood, 0, -.13, 0), sph3(.08, skin, 0, -.31, 0, 8, 6));
-  body.add(sph3(.22, skin, 0, .96, 0), sph3(.06, skin, 0, .93, .22, 8, 6),
-    box3(.05, .09, .02, dark, -.08, 1, .2), box3(.05, .09, .02, dark, .08, 1, .2), box3(.38, .14, .2, hair, 0, .92, -.1));
-  const capTop = new THREE.Mesh(new THREE.SphereGeometry(.24, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), cap);
-  capTop.position.y = 1.02; capTop.castShadow = true;
-  body.add(capTop, box3(.34, .04, .22, cap, 0, 1.02, .2));
-  root.scale.setScalar(1.12);
-  return { root, body, legL, legR, armL, armR, yaw: 1.1 };
-}
-function poseHero3D(m, h, alpha, show) {
-  m.root.visible = show && !(h.inv > 0 && !h.dead && Math.floor(gameT * 20) % 2);
-  if (!show) return;
-  const x = lerp(h.px, h.x, alpha), y = lerp(h.py, h.y, alpha);
-  m.root.position.set(wX(x + h.w / 2), wY(y + h.h), .15);
-  m.yaw += ((h.face > 0 ? 1.1 : -1.1) - m.yaw) * .35;
-  const spin = h.spin > 0 ? (1 - h.spin / .4) * Math.PI * 2 * h.face : 0;
-  m.root.rotation.set(0, m.yaw + spin, h.dead ? Math.PI * .5 * -h.face : 0);
-  const sw = Math.sin(h.anim * .32) * Math.min(1, Math.abs(h.vx) / 60);
-  if (!h.onGround && !(h === p && state === 'flag')) {
-    m.legL.rotation.x = -.7; m.legR.rotation.x = .4; m.armL.rotation.x = -2.6; m.armR.rotation.x = -.6;
-  } else {
-    m.legL.rotation.x = sw * .8; m.legR.rotation.x = -sw * .8; m.armL.rotation.x = -sw * .7; m.armR.rotation.x = sw * .7;
-  }
-  m.body.rotation.y = 0;
-  if (h.punchT > 0 && !h.dead) { m.armR.rotation.x = -Math.PI / 2; m.armR.rotation.z = 0; m.body.rotation.y = -.35; m.armL.rotation.x = -.9; }
-  if (h.stun > 0) m.body.rotation.x = -.25; else m.body.rotation.x = 0;
-}
-function makeEnemy3D() {
-  const root = new THREE.Group();
-  const body = sph3(.46, lam({ color: 0x8a3ab8 }), 0, .44, 0, 16, 12); body.scale.set(1, .85, .9);
-  const white = lam({ color: 0xffffff }), dark = lam({ color: 0x1a0a20 });
-  for (const sx of [-1, 1]) {
-    const eye = sph3(.12, white, sx * .15, .52, .34, 10, 8); eye.scale.set(1, 1.3, .6);
-    const pupil = sph3(.06, dark, sx * .13, .5, .42, 8, 6);
-    const brow = box3(.2, .045, .04, dark, sx * .16, .7, .37); brow.rotation.z = sx * -.45;
-    root.add(eye, pupil, brow);
-  }
-  root.add(body, box3(.22, .04, .03, dark, 0, .3, .4));
-  const feet = [-1, 1].map(sx => { const f = box3(.22, .1, .28, lam({ color: 0x3a1a10 }), sx * .17, .05, .05); root.add(f); return f; });
-  root.scale.setScalar(.92);
-  R3.scene.add(root);
-  return { root, feet };
-}
-
-// ---- per frame
-const _v3 = { v: null, c: null, d: null };
-function toScreen3D(x, y, z = .3) {
-  const v = _v3.v || (_v3.v = new THREE.Vector3());
-  v.set(wX(x), wY(y), z).project(R3.cam);
-  return [(v.x + 1) / 2 * VW, (1 - v.y) / 2 * VH];
-}
-function render3D(alpha) {
-  const m = mats3();
-  camF = lerp(prevCamX, camX, alpha);
-  let sx = 0, sy = 0;
-  if (shake > 0) { sx = (Math.random() - .5) * .18; sy = (Math.random() - .5) * .18; }
-  const cx = wX(camF + VW / 2);
-  R3.cam.position.set(cx + sx, 9.8 + sy, R3.dist);
-  R3.cam.lookAt(cx + sx, 7.5 + sy, 0);
-  R3.sun.position.set(cx - 7, 18, 14); R3.sun.target.position.set(cx, 4, -2);
-
-  // animated tiles
-  m.q.map = m.qTex[[0, 0, 0, 1, 2, 1][Math.floor(gameT * 7) % 6]];
-  const now = new Set();
-  for (const b of bumps) {
-    const s = R3.slots.get(b.ty * LW + b.tx);
-    if (!s) continue;
-    setInst(s.mesh, s.i, b.tx, b.ty, Math.sin(Math.min(1, b.t / .2) * Math.PI) * .32, false);
-    now.add(b.ty * LW + b.tx);
-  }
-  for (const k of R3.bumped) if (!now.has(k)) { const s = R3.slots.get(k); if (s) setInst(s.mesh, s.i, k % LW, Math.floor(k / LW), 0, false); }
-  R3.bumped = now;
-
-  // coins spin
-  const d = _v3.d || (_v3.d = new THREE.Object3D());
-  coins.forEach((c, i) => {
-    d.position.set(wX(c.x + 5), wY(c.y + 7), 0); d.rotation.set(Math.PI / 2, 0, gameT * 4 + c.x * .05);
-    const s = c.got ? 0 : 1; d.scale.set(s, s, s); d.updateMatrix(); R3.coins.setMatrixAt(i, d.matrix);
-  });
-  R3.coins.instanceMatrix.needsUpdate = true;
-
-  // flag + portals
-  R3.flag.position.set(FLAGX + .45, wY(flagY) - .94, .05);
-  R3.portalMat.map = R3.portalTex[Math.floor(gameT * 10) % R3.portalTex.length];
-  R3.portals.forEach((g, i) => { g.children[1].rotation.z = gameT * 1.5 + i; g.children[2].intensity = 6 + Math.sin(gameT * 4) * 2; });
-
-  // heroes
-  poseHero3D(R3.hero, p, alpha, p.visible && state !== 'porting' && state !== 'remote');
-  poseHero3D(R3.guestHero, guest || p, alpha, !!guest);
-  poseHero3D(R3.ghostHero, NET.ghost || p, alpha, state === 'remote' && !!NET.ghost);
-
-  // enemies
-  const alive = new Set();
-  for (const e of enemies) {
-    if (!e.active) continue;
-    alive.add(e);
-    let em = R3.enemyModels.get(e);
-    if (!em) R3.enemyModels.set(e, em = makeEnemy3D());
-    const ex = lerp(e.px, e.x, alpha), ey = lerp(e.py, e.y, alpha);
-    em.root.position.set(wX(ex + e.w / 2), wY(ey + e.h), .1);
-    em.root.rotation.set(0, 0, e.flipped ? Math.PI : Math.sin(e.anim * 12) * .12);
-    em.root.scale.set(.92, e.squash > 0 ? .25 : .92, .92);
-    if (e.flipped) em.root.position.y += .8;
-    em.feet[0].position.y = .05 + Math.max(0, Math.sin(e.anim * 12)) * .08;
-    em.feet[1].position.y = .05 + Math.max(0, -Math.sin(e.anim * 12)) * .08;
-  }
-  for (const [e, em] of R3.enemyModels) if (!alive.has(e)) { R3.scene.remove(em.root); R3.enemyModels.delete(e); }
-
-  // particles
-  const col = _v3.c || (_v3.c = new THREE.Color());
-  let n = 0;
-  for (const q of parts) {
-    if (q.type === 'text' || n >= 500) continue;
-    let size = .14, c = '#ffffff', z = .4;
-    if (q.type === 'debris') { size = .3; c = '#c8501c'; }
-    else if (q.type === 'coin') { size = .35; c = '#ffc830'; }
-    else if (q.type === 'spark') { size = .12; c = q.col; }
-    else if (q.type === 'puff') { size = .2 * (q.life / q.max) + .05; }
-    d.position.set(wX(q.x + (q.type === 'debris' ? 4 : q.type === 'coin' ? 8 : 0)), wY(q.y + (q.type === 'coin' ? 8 : 0)), z);
-    d.rotation.set(gameT * 5 + n, gameT * 3, 0); d.scale.set(size, size, size); d.updateMatrix();
-    R3.parts.setMatrixAt(n, d.matrix); R3.parts.setColorAt(n, col.set(c)); n++;
-  }
-  R3.parts.count = n; R3.parts.instanceMatrix.needsUpdate = true;
-  if (R3.parts.instanceColor) R3.parts.instanceColor.needsUpdate = true;
-
-  R3.renderer.render(R3.scene, R3.cam);
-
-  // 2D overlay: labels in world space, then HUD
-  ctx.clearRect(0, 0, VW, VH);
-  for (const q of parts) if (q.type === 'text') { const [x, y] = toScreen3D(q.x, q.y); drawText(q.s, Math.round(x), Math.round(y)); }
-  for (const tx of PORTALS) {
-    if (Math.floor(gameT * 2) % 2) continue;
-    const [x, y] = toScreen3D(tx * TS + 8, 13 * TS - 44, 0);
-    if (x > -30 && x < VW + 30) drawText('PORTAL', Math.round(x), Math.round(y), '#e0c8ff', 'center');
-  }
-  if (guest) {
-    const [x, y] = toScreen3D(lerp(guest.px, guest.x, alpha) + 6, lerp(guest.py, guest.y, alpha) - 4);
-    drawText(guest.name, Math.round(x), Math.round(y) - 14, '#ff9ccc', 'center');
-  }
-  for (const h of [state === 'remote' || state === 'porting' ? null : p, guest, state === 'remote' ? NET.ghost : null]) {
-    if (!h || !h.hits || h.dead) continue;
-    const [x, y] = toScreen3D(lerp(h.px, h.x, alpha) + 6, lerp(h.py, h.y, alpha) - 4);
-    drawPips(Math.round(x) - 10, Math.round(y) - (h === guest ? 24 : 14), h.hits);
-  }
-  drawHUD();
-  drawOverlay();
-}
-
-// ============================================================================
 // Main loop: fixed timestep + accumulator + interpolation
 // ============================================================================
 let last = performance.now(), acc = 0;
@@ -1944,11 +1560,10 @@ function frame(now) {
   last = now;
   while (acc >= STEP) { update(STEP); acc -= STEP; }
   const alpha = state === 'paused' ? 1 : acc / STEP;
-  if (R3.ok) render3D(alpha); else render(alpha);
+  render(alpha);
   requestAnimationFrame(frame);
 }
 
-init3D();
 resize();
 startLevel();
 setState('title');

@@ -1,7 +1,6 @@
 # Jump Game
 
-A single-page, Super-Mario-style platformer with an N64-style ("64-bit") 2.5D low-poly look — one HTML file, no build step.
-Rendered with three.js (WebGL); falls back to the original pixel-art Canvas renderer if WebGL isn't available.
+A single-page, Super-Mario-style pixel-art platformer built with plain HTML5 Canvas — one HTML file, no build step.
 
 ## Controls
 | Action | Keyboard | Touch |
@@ -35,8 +34,6 @@ flashing from the last one) fills a red pip; **3 clean punches = K.O.** and the 
 
 ## Tech notes
 - Fixed 120 Hz physics step with render interpolation — smooth on 60/120/144 Hz screens.
-- 3D: instanced meshes for all tiles (one draw call per block type), soft shadows, fog, low-poly flat-shaded scenery;
-  64×64 textures generated from the pixel tiles at startup.
 - All pixel art is generated once at startup into offscreen canvases; the level's tiles are cached in a single layer and only changed tiles are redrawn.
 - Low-res (240px tall) canvas scaled up with `image-rendering: pixelated`.
 - Tiny WebAudio synth for sound effects plus an original chiptune soundtrack, scheduled ahead on the audio clock for steady timing (speeds up when time runs low).
