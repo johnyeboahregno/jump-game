@@ -30,6 +30,11 @@
   .tb.pp { background: rgba(250,190,40,.4); }
   .tb.pp.down { background: rgba(255,210,60,.75); }
   .tb svg { width: 30px; height: 30px; fill: #fff; }
+  .pad.act { gap: 10px; align-items: flex-end; }
+  .pad.act .tb { width: 50px; height: 50px; font-size: 13px; border-width: 2px; }
+  .pad.act .tb.j { width: 56px; height: 56px; }
+  .tb.xx { background: rgba(160,80,240,.5); display: none; }
+  .tb.xx.show { display: flex; }
 </style>
 </head>
 <body>
@@ -37,9 +42,11 @@
 <div id="touch">
   <div class="pad">
     <button class="tb" data-k="ArrowLeft" aria-label="Left"><svg viewBox="0 0 24 24"><path d="M16 3 5 12l11 9z"/></svg></button>
+    <button class="tb" data-k="ArrowDown" aria-label="Down (enter pipe)"><svg viewBox="0 0 24 24"><path d="M3 8h18l-9 11z"/></svg></button>
     <button class="tb" data-k="ArrowRight" aria-label="Right"><svg viewBox="0 0 24 24"><path d="M8 3l11 9-11 9z"/></svg></button>
   </div>
-  <div class="pad">
+  <div class="pad act">
+    <button class="tb xx" data-k="KeyX" aria-label="Come back home">X</button>
     <button class="tb pp" data-k="KeyP" aria-label="Punch">P</button>
     <button class="tb j" data-k="KeyJ" aria-label="Jump">J</button>
   </div>
@@ -50,12 +57,14 @@
 // Constants
 // ============================================================================
 const TS = 16, LH = 15, LW = 212, VH = 240;
-const VERSION = 'V2.3';                 // shown on the title screen; bump on each release
+const VERSION = 'V2.5';                 // shown on the title screen; bump on each release
 const STEP = 1 / 120;                    // fixed physics step (render is interpolated)
 const GRAV = 1500, JUMP_V = 470, STOMP_V = 330, MAX_FALL = 520;
 const ACC = 700, DEC = 900, AIR_DEC = 400, MAX_VX = 140;
 const FLAGX = 202, CASTLE_X = 205, CHECKPOINT_X = 100;
-const PORTALS = [29, 140];               // tile columns of the network portals
+const WARP_TIME = .55;                   // seconds to sink into / rise out of a pipe
+// each other player online gets their own warp pipe in one of these colours
+const PLAYER_COLORS = ['#e83a3a', '#3a7ae8', '#f0c020', '#a04ae8', '#f07a1a', '#20c8d8', '#e84ab0', '#e8e8e8'];
 const SOLID_FROM = 1;                    // any tile id >= 1 is solid
 // Tile ids
 const GROUND = 1, BRICK = 2, QBLOCK = 3, USED = 4, CRATE = 5, HARD = 6,
@@ -151,7 +160,13 @@ const makeHero = pal => ({
 });
 const HERO = makeHero(HERO_PAL);
 // visiting players from another screen get a pink cap + blue hoodie
-const HERO2 = makeHero({ ...HERO_PAL, C: '#e8408a', c: '#a01a5a', T: '#3ac0ff', t: '#1a7ac8', Y: '#ffffff' });
+const heroCache = new Map();
+// a visiting player wears their warp-pipe colour
+function heroFor(color) {
+  if (!heroCache.has(color)) heroCache.set(color, makeHero({ ...HERO_PAL, C: color, c: mix(color, '#000000', .45),
+    T: mix(color, '#ffffff', .25), t: mix(color, '#000000', .25), Y: '#ffffff' }));
+  return heroCache.get(color);
+}
 
 // ---------------------------------------------------------------- enemy "Blorb"
 const EN_PAL = { P: '#8a3ab8', L: '#c98af0', D: '#4a1a6a', K: '#1a0a20', W: '#ffffff', F: '#3a1a10' };
@@ -231,25 +246,39 @@ TILE.hard = paint(16, 16, g => {
   px(g, '#787890', 1, 14, 14, 1); px(g, '#787890', 14, 1, 1, 14);
   px(g, '#bcbcce', 3, 3, 9, 9); px(g, '#8c8ca0', 4, 12, 9, 1); px(g, '#8c8ca0', 12, 4, 1, 9);
 });
-function pipeSprite(lip) {
+// blend two #rrggbb colours (t = 0 -> a, 1 -> b)
+function mix(a, b, t) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ch = sh => Math.round(((pa >> sh) & 255) * (1 - t) + ((pb >> sh) & 255) * t);
+  return '#' + ((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, '0');
+}
+const GREEN_PIPE = { out: '#0a3a0a', light: '#5ac83a', hi: '#c8ff98', mid: '#2ea42e', dark: '#1e7a1e', darker: '#145a14', lipHi: '#9af070' };
+const pipePal = base => ({ out: mix(base, '#000000', .78), light: mix(base, '#ffffff', .3), hi: mix(base, '#ffffff', .7), mid: base,
+                           dark: mix(base, '#000000', .3), darker: mix(base, '#000000', .5), lipHi: mix(base, '#ffffff', .5) });
+function pipeSprite(lip, pal = GREEN_PIPE) {
   return paint(32, 16, g => {
     const W = lip ? 32 : 28, ox = lip ? 0 : 2;
     for (let x = 0; x < W; x++) {
       let c;
-      if (x === 0 || x === W - 1) c = '#0a3a0a';
-      else if (x <= 2) c = '#5ac83a';
-      else if (x <= 5) c = '#c8ff98';
-      else if (x <= 9) c = '#5ac83a';
-      else if (x < W - 9) c = '#2ea42e';
-      else if (x < W - 5) c = '#1e7a1e';
-      else c = '#145a14';
+      if (x === 0 || x === W - 1) c = pal.out;
+      else if (x <= 2) c = pal.light;
+      else if (x <= 5) c = pal.hi;
+      else if (x <= 9) c = pal.light;
+      else if (x < W - 9) c = pal.mid;
+      else if (x < W - 5) c = pal.dark;
+      else c = pal.darker;
       px(g, c, ox + x, 0, 1, 16);
     }
-    if (lip) { px(g, '#0a3a0a', 0, 0, 32, 1); px(g, '#0a3a0a', 0, 15, 32, 1); px(g, '#9af070', 1, 1, 30, 1); }
+    if (lip) { px(g, pal.out, 0, 0, 32, 1); px(g, pal.out, 0, 15, 32, 1); px(g, pal.lipHi, 1, 1, 30, 1); }
   });
 }
 TILE.pipeLip = pipeSprite(true);
 TILE.pipeBody = pipeSprite(false);
+const pipeCache = new Map();
+function pipeFor(color) {
+  if (!pipeCache.has(color)) pipeCache.set(color, { lip: pipeSprite(true, pipePal(color)), body: pipeSprite(false, pipePal(color)) });
+  return pipeCache.get(color);
+}
 
 function coinFrame(rx) {
   const ry = 7;
@@ -351,6 +380,7 @@ const sfx = {
   over: () => [392, 330, 262, 196].forEach((f, i) => tone(f, 0, .3, 'triangle', .12, i * .28)),
   pause: () => { tone(988, 0, .06); tone(659, 0, .06, 'square', .07, .08); },
   swing: () => tone(700, 300, .07, 'triangle', .06),
+  pipe: () => [520, 390, 290, 220, 520, 390, 290, 220].forEach((f, i) => tone(f, 0, .06, 'square', .06, i * .065)),
   punch: () => { tone(180, 60, .12, 'square', .12); tone(90, 40, .15, 'triangle', .2); },
   ko: () => { [392, 330, 262].forEach((f, i) => tone(f, f / 2, .18, 'square', .09, i * .12)); tone(60, 30, .5, 'triangle', .25, .36); },
 };
@@ -444,7 +474,7 @@ function syncMusic() {
 // ============================================================================
 const keys = Object.create(null);
 let jQueue = false, jEdge = false;
-const GAME_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space', 'KeyJ', 'KeyP']);
+const GAME_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space', 'KeyJ', 'KeyP', 'KeyX']);
 let pQueue = false, pEdge = false;
 addEventListener('keydown', e => {
   if (GAME_KEYS.has(e.code)) e.preventDefault();
@@ -454,6 +484,7 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyJ' || (e.code === 'Enter' && state !== 'play')) jQueue = true;
   if (e.code === 'KeyM') toggleSound('music');
   if (e.code === 'KeyS') toggleSound('sfx');
+  if (e.code === 'KeyX') recallHome();
   if (e.code === 'KeyP') pQueue = true;
   if (e.code === 'Escape') togglePause();
   if (e.code === 'KeyN' && state === 'title') renamePlayer();
@@ -462,7 +493,7 @@ addEventListener('keyup', e => { keys[e.code] = false; });
 addEventListener('blur', () => {
   for (const k in keys) keys[k] = false;
   if (state === 'play') togglePause();
-  if (state === 'remote') sendTo(NET.host, { t: 'in', l: false, r: false, j: false, jp: NET.seq });
+  if (state === 'remote') sendTo(NET.host, { t: 'in', l: false, r: false, j: false, d: false, jp: NET.seq, pp: NET.pseq });
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') togglePause(); });
 
@@ -477,6 +508,7 @@ for (const b of touchEl.querySelectorAll('.tb')) {
     keys[k] = true; b.classList.add('down');
     if (k === 'KeyJ') jQueue = true;
     if (k === 'KeyP') pQueue = true;
+    if (k === 'KeyX') recallHome();
   };
   const up = e => { e.preventDefault(); keys[k] = false; b.classList.remove('down'); };
   b.addEventListener('pointerdown', down);
@@ -504,7 +536,7 @@ cvs.addEventListener('pointerdown', e => {
 // ============================================================================
 // Level
 // ============================================================================
-let grid, coins, enemies, parts, bumps, decos, clouds;
+let grid, coins, enemies, parts, bumps, decos, clouds, PIPES = [];
 let tileLayer, tileLayerCtx;            // cached static tile layer (redrawn per changed tile)
 
 function inGrid(x, y) { return x >= 0 && x < LW && y >= 0 && y < LH; }
@@ -573,7 +605,9 @@ function buildLevel() {
   for (let i = 0; i < 8; i++) stack(186 + i, i + 1, HARD);
   stack(194, 8, HARD);
   setT(FLAGX, 12, HARD);
-  for (const tx of PORTALS) for (let y = 9; y <= 12; y++) setT(tx, y, 0);
+  PIPES = [];
+  for (let y = 0; y < LH; y++) for (let x = 0; x < LW; x++) if (grid[y][x] === PIPE_TL) PIPES.push({ x, top: y });
+  PIPES.sort((a, b) => a.x - b.x);
 
   // scenery (seeded so it's identical every time)
   let seed = 11;
@@ -648,7 +682,8 @@ function resetPlayer() {
 }
 function startLevel() { buildLevel(); resetPlayer(); time = 300; flagY = 3 * TS; if (guest) spawnGuest(); }
 function newGame() { score = 0; coinCount = 0; lives = 3; checkpoint = false; startLevel(); setState('play'); }
-function setState(s) { state = s; stateT = 0; }
+const xBtn = document.querySelector('.tb.xx');
+function setState(s) { state = s; stateT = 0; xBtn.classList.toggle('show', s === 'remote' || s === 'porting'); }
 function togglePause() {
   if (state === 'play') { pausedFrom = 'play'; setState('paused'); sfx.pause(); }
   else if (state === 'paused') { state = pausedFrom; sfx.pause(); }
@@ -714,9 +749,12 @@ function update(dt) {
     case 'paused': if (jEdge) togglePause(); return;
     case 'porting':
       updateParts(dt);
-      if (stateT > 4) { setState('play'); showToast('NO ANSWER FROM ' + NET.hostName); NET.host = null; }
+      if (stateT > 4) warpFailed('NO ANSWER FROM ' + NET.hostName);
       return;
-    case 'remote': netSendInputs(dt); updateGhost(dt); updateParts(dt); return;
+    case 'remote':
+      netSendInputs(dt); updateGhost(dt); updateParts(dt);
+      if (NET.recallT > 0 && (NET.recallT -= dt) <= 0) comeHome(null, 'BACK HOME');   // other screen never answered
+      return;
     case 'dying':
       updatePlayer(dt); updateParts(dt);
       if (stateT > 2.6) {
@@ -756,9 +794,11 @@ function updatePlayer(dt) {
     return;
   }
   if (state === 'flag') return flagUpdate(dt);
+  if (p.warp) { stepWarp(p, dt); return; }
 
   const dir = (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0);
   p.jHeld = !!keys.KeyJ;
+  if (keys.ArrowDown && state === 'play') { tryWarpDown(); if (p.warp) return; }
   if (pEdge) tryPunch(p);
   heroPhysics(p, dir, jEdge, dt);
 
@@ -767,8 +807,6 @@ function updatePlayer(dt) {
   if (p.x + p.w >= FLAGX * TS - 1 && state === 'play') startFlag();
 
   collectCoins(p);
-  if (p.portalCD > 0) p.portalCD -= dt;
-  else if (state === 'play') { const pt = portalAt(p); if (pt !== null) enterPortal(pt); }
 }
 
 // Movement + jumping for any hero (the local player or a visiting guest).
@@ -812,15 +850,58 @@ function collectCoins(h) {
     c.got = true; addCoin(); addScore(100); sfx.coin(); sparkle(c.x + 5, c.y + 7);
   }
 }
-function portalAt(h) {
-  const cx = h.x + h.w / 2;
-  for (const tx of PORTALS) if (cx > tx * TS + 2 && cx < tx * TS + 14 && h.y + h.h > 11 * TS + 4 && h.y < 13 * TS) return tx;
+// ---- warp pipes: stand on a coloured pipe and press DOWN to warp to that player
+function pipeUnder(h) {
+  if (!h.onGround) return null;
+  const feet = h.y + h.h, cx = h.x + h.w / 2;
+  for (let i = 0; i < PIPES.length; i++) {
+    const pp = PIPES[i];
+    if (Math.abs(feet - pp.top * TS) < 1 && cx > pp.x * TS + 4 && cx < pp.x * TS + 28) return i;
+  }
   return null;
+}
+function pipeOwners() {                                   // pipe index -> the online player it leads to
+  const out = [];
+  [...NET.peers.keys()].sort().slice(0, PIPES.length).forEach((id, i) =>
+    out[i] = { id, name: NET.peers.get(id).name, color: PLAYER_COLORS[i % PLAYER_COLORS.length] });
+  return out;
+}
+function colorOf(id) { const o = pipeOwners().find(o => o && o.id === id); return o ? o.color : '#e84ab0'; }
+function startWarpIn(h, i, done) {
+  const pp = PIPES[i];
+  h.x = pp.x * TS + 16 - h.w / 2; h.vx = h.vy = 0; h.punchT = 0; h.spin = 0;
+  h.warp = { mode: 'in', t: 0, top: pp.top * TS, done };
+  sfx.pipe();
+}
+function emergeFrom(h, i) {
+  const pp = PIPES[i];
+  h.x = pp.x * TS + 16 - h.w / 2; h.y = pp.top * TS; h.px = h.x; h.py = h.y; h.vx = h.vy = 0;
+  h.warp = { mode: 'out', t: 0, top: pp.top * TS }; h.visible = true; h.dead = false;
+  sfx.pipe();
+}
+function stepWarp(h, dt) {
+  const w = h.warp, k = Math.min(1, (w.t += dt) / WARP_TIME);
+  h.y = w.mode === 'in' ? w.top - h.h + h.h * k : w.top - h.h * k;
+  if (k < 1) return;
+  h.warp = null;
+  if (w.mode === 'in') w.done(); else { h.onGround = true; h.inv = Math.max(h.inv || 0, .6); }
+}
+const toastOnce = msg => { if (!toast || toast.s !== msg) showToast(msg); };
+function tryWarpDown() {
+  const i = pipeUnder(p);
+  if (i === null) return;
+  if (NET.status !== 'online') return toastOnce(NET.status === 'offline' ? 'WARP PIPES OFFLINE' : 'WARP PIPES CONNECTING...');
+  const o = pipeOwners()[i];
+  if (!o) return toastOnce('NO PLAYER ON THIS PIPE');
+  if (guest) return toastOnce("CAN'T WARP WHILE " + guest.name + ' VISITS');
+  const pr = NET.peers.get(o.id);
+  if (!pr || pr.g || pr.st === 'remote' || pr.st === 'porting') return toastOnce(o.name + ' IS BUSY');
+  startWarpIn(p, i, () => enterPortal(i));
 }
 function heroes() {
   const hs = [];
-  if (state === 'play' && !p.dead) hs.push(p);
-  if (guest && !guest.dead) hs.push(guest);
+  if (state === 'play' && !p.dead && !p.warp) hs.push(p);
+  if (guest && !guest.dead && !guest.warp) hs.push(guest);
   return hs;
 }
 // Run fn with the global score/coins/lives swapped for the guest's, so the shared
@@ -1007,16 +1088,20 @@ function render(alpha) {
   ctx.drawImage(COIN[0], poleX - 7, 2 * TS - 6);
   ctx.drawImage(FLAG, poleX - 16, Math.round(flagY));
 
-  // network portals
-  const pf = PORTAL[Math.floor(gameT * 10) % PORTAL.length];
-  for (const tx of PORTALS) if (tx * TS + 20 > cx && tx * TS - 4 < cx + VW) {
-    ctx.drawImage(pf, tx * TS - 2, 13 * TS - 34);
-    if (Math.floor(gameT * 2) % 2 === 0) drawText('PORTAL', tx * TS + 8, 13 * TS - 46, '#e0c8ff', 'center');
-  }
-
   // tiles: cached static layer (only visible slice is blitted)
   const sx0 = Math.max(0, cx), sw = Math.min(VW, LW * TS - sx0);
   ctx.drawImage(tileLayer, sx0, 0, sw, VH, sx0, 0, sw, VH);
+  // warp pipes: recolour each pipe that leads to an online player and label it with their name
+  const owners = pipeOwners(), onPipe = state === 'play' && p && !p.warp ? pipeUnder(p) : null;
+  PIPES.forEach((pp, i) => {
+    const o = owners[i];
+    if (!o || pp.x * TS + 32 < cx || pp.x * TS > cx + VW) return;
+    const spr = pipeFor(o.color);
+    ctx.drawImage(spr.lip, pp.x * TS, pp.top * TS);
+    for (let y = pp.top + 1; y <= 12; y++) ctx.drawImage(spr.body, pp.x * TS, y * TS);
+    drawText(o.name, pp.x * TS + 16, pp.top * TS - 12, o.color, 'center');
+    if (onPipe === i && Math.floor(gameT * 3) % 2 === 0) drawText('PRESS DOWN', pp.x * TS + 16, pp.top * TS - 24, '#ffffff', 'center');
+  });
   // animated / bumped tiles
   const qf = TILE.q[[0, 0, 0, 1, 2, 1][Math.floor(gameT * 7) % 6]];
   const tx0 = Math.floor(cx / TS), tx1 = Math.min(LW - 1, tx0 + Math.ceil(VW / TS) + 1);
@@ -1066,9 +1151,10 @@ function drawPlayer(alpha) {
     ctx.globalAlpha = .45 + Math.sin(gameT * 6) * .1; drawHero(NET.ghost, HERO, alpha); ctx.globalAlpha = 1;
   }
   if (guest) {
-    drawHero(guest, HERO2, alpha);
+    const col = colorOf(guest.id);
+    drawHero(guest, heroFor(col), alpha);
     const gx = snapX(lerp(guest.px, guest.x, alpha)) + 6, gy = Math.round(lerp(guest.py, guest.y, alpha));
-    drawText(guest.name, gx, gy - 11, '#ff9ccc', 'center');
+    if (!guest.warp) drawText(guest.name, gx, gy - 11, col, 'center');
   }
   for (const h of [state === 'remote' || state === 'porting' ? null : p, guest, state === 'remote' ? NET.ghost : null]) {   // hit pips above anyone who's been punched
     if (!h || !h.hits || h.dead) continue;
@@ -1083,6 +1169,13 @@ function drawPips(x, y, n) {
   }
 }
 function drawHero(h, set, alpha) {
+  if (!h.warp) return drawHeroSprite(h, set, alpha);
+  ctx.save();                                              // only the part above the pipe's rim shows
+  ctx.beginPath(); ctx.rect(-1e4, -1e4, 2e4, 1e4 + h.warp.top); ctx.clip();
+  drawHeroSprite(h, set, alpha);
+  ctx.restore();
+}
+function drawHeroSprite(h, set, alpha) {
   const flagPose = h === p && state === 'flag';
   let spr;
   if (h.inv > 0 && !h.dead && Math.floor(gameT * 20) % 2) return;     // flash while invulnerable
@@ -1155,7 +1248,7 @@ function drawOverlay() {
   const blink = Math.floor(gameT * 2.5) % 2 === 0;
   const startMsg = isTouch ? 'TAP J TO START' : 'PRESS J TO START';
   if (state === 'title') {
-    const { y } = panel(Math.min(VW - 24, 232), 112);
+    const { y } = panel(Math.min(VW - 24, 232), 124);
     drawText('JUMP GAME', VW / 2, y + 14, '#ffe14a', 'center', 16);
     drawText(VERSION, VW - 6, VH - 12, 'rgba(255,255,255,.7)', 'right');
     drawText('ARROWS  MOVE', VW / 2, y + 42, '#fff', 'center');
@@ -1163,12 +1256,13 @@ function drawOverlay() {
     drawText('J J  DOUBLE JUMP', VW / 2, y + 66, '#fff', 'center');
     drawText(isTouch ? 'P  PUNCH   II  PAUSE' : 'P  PUNCH   ESC  PAUSE', VW / 2, y + 78, '#fff', 'center');
     drawText(isTouch ? 'TAP ICONS FOR SOUND' : 'M  MUSIC   S  SOUND FX', VW / 2, y + 90, '#fff', 'center');
-    if (blink) drawText(startMsg, VW / 2, y + 116, '#fff', 'center');
-    if (hiScore) drawText('TOP ' + pad(hiScore, 6), VW / 2, y + 130, '#ffe14a', 'center');
+    drawText('DOWN ON COLOR PIPE  X HOME', VW / 2, y + 102, '#ffe14a', 'center');
+    if (blink) drawText(startMsg, VW / 2, y + 128, '#fff', 'center');
+    if (hiScore) drawText('TOP ' + pad(hiScore, 6), VW / 2, y + 142, '#ffe14a', 'center');
     const net = NET.status === 'online' ? (NET.peers.size ? (NET.peers.size + 1) + ' PLAYERS ONLINE' : 'ONLY YOU ONLINE RIGHT NOW')
-              : NET.status === 'offline' ? 'PORTALS OFFLINE' : 'CONNECTING PORTALS...';
-    drawText(net, VW / 2, y + 144, '#e0c8ff', 'center');
-    drawText('YOU: ' + NET.name + (isTouch ? '' : '  (N TO RENAME)'), VW / 2, y + 156, '#ff9ccc', 'center');
+              : NET.status === 'offline' ? 'WARP PIPES OFFLINE' : 'CONNECTING...';
+    drawText(net, VW / 2, y + 156, '#e0c8ff', 'center');
+    drawText('YOU: ' + NET.name + (isTouch ? '' : '  (N TO RENAME)'), VW / 2, y + 168, '#ff9ccc', 'center');
   } else if (state === 'paused') {
     ctx.fillStyle = 'rgba(0,0,20,.45)'; ctx.fillRect(0, 0, VW, VH);
     drawText('PAUSED', VW / 2, VH / 2 - 8, '#fff', 'center', 16);
@@ -1188,13 +1282,13 @@ function drawOverlay() {
     ctx.fillStyle = 'rgba(20,0,50,.6)'; ctx.fillRect(0, 0, VW, VH);
     const swirl = PORTAL[Math.floor(gameT * 10) % PORTAL.length];
     ctx.drawImage(swirl, Math.round(VW / 2 - 20), 44, 40, 68);
-    drawText('PORTING TO', VW / 2, 126, '#e0c8ff', 'center');
+    drawText('WARPING TO', VW / 2, 126, '#e0c8ff', 'center');
     drawText(NET.hostName, VW / 2, 142, '#ffe14a', 'center', 12);
   } else if (state === 'remote') {
     ctx.fillStyle = 'rgba(40,0,80,.18)'; ctx.fillRect(0, 0, VW, VH);
     ctx.fillStyle = 'rgba(20,0,50,.7)'; ctx.fillRect(0, VH - 34, VW, 34);
     drawText('GHOST MODE: YOU ARE ON ' + NET.hostName + "'S SCREEN", VW / 2, VH - 29, '#ffe14a', 'center');
-    drawText(NET.ghost ? 'JUMP IN A PORTAL THERE TO COME HOME' : 'CONNECTING...', VW / 2, VH - 16, '#e0c8ff', 'center');
+    drawText(NET.ghost ? 'PRESS X TO COME BACK HOME' : 'CONNECTING...', VW / 2, VH - 16, '#e0c8ff', 'center');
   }
   drawSoundButtons();
   if (koBanner) {
@@ -1222,7 +1316,7 @@ const MQTT_LIB = 'https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js';
 const NAME_A = ['RED', 'BLUE', 'GOLD', 'MINT', 'PINK', 'JADE', 'RUBY', 'SKY'];
 const NAME_B = ['FOX', 'OWL', 'CAT', 'FROG', 'BEAR', 'WOLF', 'BEE', 'YAK'];
 const NET = { id: Math.random().toString(36).slice(2, 10), name: '', base: '', client: null, status: 'connecting',
-  peers: new Map(), links: new Map(), host: null, hostName: '', portalX: PORTALS[0], seq: 0, pseq: 0, lastSent: '', sendT: 0 };
+  peers: new Map(), links: new Map(), host: null, hostName: '', pipe: 0, seq: 0, pseq: 0, lastSent: '', sendT: 0 };
 let guest = null, toast = null;
 const cleanName = n => String(n || '').toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim().slice(0, 10) || 'PLAYER';
 const clampInt = (v, a, b) => clamp(Math.floor(+v || 0), a, b);
@@ -1345,12 +1439,12 @@ function onNet(topic, m) {
     case 'accept': if (fromHost && state === 'porting') { setState('remote'); NET.hostName = cleanName(m.name); sfx.djump(); openLink(m.from); } break;
     case 'rtc-offer': if (fromGuest) acceptLink(m.from, m.sdp); break;
     case 'rtc-answer': if (fromHost) finishLink(m.from, m.sdp); break;
-    case 'busy': if (fromHost) { NET.host = null; setState('play'); showToast(NET.hostName + ' IS BUSY'); } break;
+    case 'busy': if (fromHost) warpFailed(NET.hostName + ' IS BUSY'); break;
     case 'gstate': if (fromHost) { applyStats(m); ghostTarget(m); } break;
     case 'home': if (fromHost) comeHome(m, m.reason === 'out' ? 'OUT OF LIVES!' : 'WELCOME HOME!'); break;
     case 'in':
       if (!fromGuest) break;
-      guest.keys.l = !!m.l; guest.keys.r = !!m.r; guest.keys.j = !!m.j; guest.seen = performance.now();
+      guest.keys.l = !!m.l; guest.keys.r = !!m.r; guest.keys.j = !!m.j; guest.keys.d = !!m.d; guest.seen = performance.now();
       if (+m.jp > guest.jp) { guest.jp = +m.jp; guest.jQueue = true; }
       if (+m.pp > guest.pp) { guest.pp = +m.pp; guest.pQueue = true; }
       break;
@@ -1360,25 +1454,29 @@ function onNet(topic, m) {
       showToast(m.won ? 'YOU KNOCKED OUT ' + NET.hostName + '!' : 'KNOCKED OUT BY ' + NET.hostName, 3);
       sfx.ko();
       break;
+    case 'recall': if (fromGuest) { sparkle(guest.x + 6, guest.y + 8, colorOf(guest.id), 14, 100, .5); sendGuestHome('recall'); } break;
     case 'leave': if (fromGuest) { showToast(guest.name + ' WENT HOME'); closeLink(guest.id); guest = null; } break;
   }
 }
 function applyStats(m) { score = clampInt(m.score, 0, 9999999); coinCount = clampInt(m.coins, 0, 99); lives = clampInt(m.lives, 0, 99); }
 
-// ---- this device walks into a portal
-function enterPortal(tx) {
-  p.portalCD = 2;
-  if (NET.status !== 'online') { showToast(NET.status === 'offline' ? 'PORTAL OFFLINE' : 'PORTAL WARMING UP...'); return; }
-  const free = [...NET.peers].filter(([, pr]) => !pr.g && pr.st !== 'remote' && pr.st !== 'porting');
-  if (!free.length) { showToast('NO ONE ELSE IS ONLINE'); return; }
-  const playing = free.filter(([, pr]) => pr.st === 'play');
-  const pool = playing.length ? playing : free;
-  const [id, pr] = pool[Math.random() * pool.length | 0];
-  NET.host = id; NET.hostName = pr.name; NET.portalX = tx; NET.lastSent = '';
-  sendTo(id, { t: 'port', name: NET.name, score, coins: coinCount, lives });
-  portalBurst(p.x + p.w / 2, p.y + p.h / 2);
-  setState('porting'); sfx.flag();
+// ---- this device went down a warp pipe: hand the hero to that pipe's player
+function enterPortal(i) {
+  const o = pipeOwners()[i];
+  if (!o) { emergeFrom(p, i); return; }
+  NET.host = o.id; NET.hostName = o.name; NET.pipe = i; NET.lastSent = '';
+  sendTo(o.id, { t: 'port', name: NET.name, score, coins: coinCount, lives });
+  setState('porting');
 }
+// X: bring my hero back home from the other screen
+function recallHome() {
+  if (state === 'porting') { sendTo(NET.host, { t: 'leave' }); warpFailed('WARP CANCELLED'); return; }
+  if (state !== 'remote' || NET.recallT > 0) return;
+  sendTo(NET.host, { t: 'recall' });
+  NET.recallT = 3;
+  showToast('COMING HOME...');
+}
+function warpFailed(msg) { NET.host = null; setState('play'); emergeFrom(p, NET.pipe); showToast(msg); }
 // ---- ghost: while my hero is on another screen, mirror it (see-through) in my own level
 function ghostTarget(m) {
   if (state !== 'remote') return;
@@ -1402,27 +1500,24 @@ function updateGhost(dt) {
   followCam(g.x + g.w / 2, dt);
 }
 function netSendInputs(dt) {
-  const l = !!keys.ArrowLeft, r = !!keys.ArrowRight, j = !!keys.KeyJ;
+  const l = !!keys.ArrowLeft, r = !!keys.ArrowRight, j = !!keys.KeyJ, d = !!keys.ArrowDown;
   if (jEdge) NET.seq++;
   if (pEdge) NET.pseq++;
-  const sig = '' + l + r + j + NET.seq + ',' + NET.pseq;
+  const sig = '' + l + r + j + d + NET.seq + ',' + NET.pseq;
   NET.sendT -= dt;
   if (sig !== NET.lastSent || NET.sendT <= 0) {           // send on change + a steady keep-alive
-    sendFast(NET.host, { t: 'in', l, r, j, jp: NET.seq, pp: NET.pseq });
+    sendFast(NET.host, { t: 'in', l, r, j, d, jp: NET.seq, pp: NET.pseq });
     NET.lastSent = sig; NET.sendT = fastLink(NET.host) ? .1 : .3;
   }
 }
 function comeHome(m, msg) {
   if (m) applyStats(m);
-  closeLink(NET.host); NET.host = null; NET.ghost = null;
+  closeLink(NET.host); NET.host = null; NET.ghost = null; NET.recallT = 0;
   showToast(msg);
   if (lives <= 0) { saveHi(); setState('over'); sfx.over(); return; }
   setState('play');
-  Object.assign(p, { x: NET.portalX * TS + 18, y: 12 * TS, vx: 0, vy: 0, dead: false, visible: true, portalCD: 2, spin: .4 });
-  p.px = p.x; p.py = p.y;
+  emergeFrom(p, clamp(NET.pipe, 0, PIPES.length - 1));     // pop back out of the pipe you left from
   camX = prevCamX = clamp(p.x - VW * .42, 0, LW * TS - VW);
-  portalBurst(NET.portalX * TS + 8, 12 * TS);
-  sfx.oneup();
 }
 
 // ---- another device's hero arrives on this screen
@@ -1430,18 +1525,24 @@ function receivePort(m) {
   if ((guest && guest.id !== m.from) || state === 'remote' || state === 'porting') { sendTo(m.from, { t: 'busy' }); return; }
   if (!['play', 'flag', 'paused', 'dying'].includes(state)) newGame();
   guest = { id: m.from, name: cleanName(m.name), score: clampInt(m.score, 0, 9999999), coins: clampInt(m.coins, 0, 99),
-            lives: clampInt(m.lives, 1, 99), keys: { l: false, r: false, j: false }, jp: 0, jQueue: false, pp: 0, pQueue: false, sendT: 0 };
+            lives: clampInt(m.lives, 1, 99), keys: { l: false, r: false, j: false, d: false }, jp: 0, jQueue: false, pp: 0, pQueue: false, sendT: 0 };
   spawnGuest();
   sendTo(m.from, { t: 'accept', name: NET.name });
-  showToast(guest.name + ' PORTED IN!'); sfx.oneup();
+  showToast(guest.name + ' WARPED IN!'); sfx.oneup();
 }
 function spawnGuest() {
   const g = guest;
   const tx = clamp(Math.floor((p.x + p.w / 2) / TS) + 2, Math.ceil(camX / TS) + 1, Math.floor((camX + VW) / TS) - 2);
   Object.assign(g, { x: tx * TS + 2, y: -20, w: 12, h: 16, vx: 0, vy: 0, onGround: false, face: -1, jumps: 2, coyote: 0,
-                     buffer: 0, anim: 0, spin: .4, dead: false, deadT: 0, jHeld: false, portalCD: 2, seen: performance.now(), ...FIGHT_FIELDS() });
+                     buffer: 0, anim: 0, spin: .4, dead: false, deadT: 0, jHeld: false, warp: null, seen: performance.now(), ...FIGHT_FIELDS() });
   g.px = g.x; g.py = g.y;
-  portalBurst(g.x + 6, 10);
+  // rise out of a pipe on screen (their own colour if visible, else the one nearest the host); else drop in from the sky
+  const onScreen = PIPES.map((pp, i) => ({ pp, i })).filter(({ pp }) => pp.x * TS >= camX && pp.x * TS + 32 <= camX + VW);
+  if (onScreen.length) {
+    const own = onScreen.find(({ i }) => (pipeOwners()[i] || {}).id === g.id);
+    const near = onScreen.sort((a, b) => Math.abs(a.pp.x * TS - p.x) - Math.abs(b.pp.x * TS - p.x))[0];
+    emergeFrom(g, (own || near).i);
+  } else { g.spin = .4; portalBurst(g.x + 6, 10); }
 }
 function updateGuest(dt) {
   const g = guest;
@@ -1457,7 +1558,8 @@ function updateGuest(dt) {
     if ((g.deadT -= dt) <= 0) { if (g.lives > 0) spawnGuest(); else sendGuestHome('out'); }
     return;
   }
-  if (performance.now() - g.seen > 1500) g.keys.l = g.keys.r = g.keys.j = false;   // controller went quiet
+  if (g.warp) { stepWarp(g, dt); return; }
+  if (performance.now() - g.seen > 1500) g.keys.l = g.keys.r = g.keys.j = g.keys.d = false;   // controller went quiet
   const dir = (g.keys.r ? 1 : 0) - (g.keys.l ? 1 : 0);
   const jump = g.jQueue; g.jQueue = false; g.jHeld = g.keys.j;
   if (g.pQueue) { g.pQueue = false; tryPunch(g); }
@@ -1467,8 +1569,6 @@ function updateGuest(dt) {
     else if (g.x > camX + VW - g.w) { g.x = camX + VW - g.w; g.vx = Math.min(0, g.vx); }
   }
   if (g.y > LH * TS + 8) guestDie(true);
-  if (g.portalCD > 0) g.portalCD -= dt;
-  else if (portalAt(g) !== null) { portalBurst(g.x + 6, g.y + 8); sendGuestHome('portal'); return; }
 }
 function guestDie(fell) {
   const g = guest;
