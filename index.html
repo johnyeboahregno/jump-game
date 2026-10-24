@@ -63,7 +63,7 @@
 // Constants
 // ============================================================================
 const TS = 16, LH = 15, LW = 212, VH = 240;
-const VERSION = 'V2.6';                 // shown on the title screen; bump on each release
+const VERSION = 'V3.0';                 // shown on the title screen; bump on each release
 const STEP = 1 / 120;                    // fixed physics step (render is interpolated)
 const GRAV = 1500, JUMP_V = 470, STOMP_V = 330, MAX_FALL = 520;
 const ACC = 700, DEC = 900, AIR_DEC = 400, MAX_VX = 140;
@@ -311,18 +311,6 @@ const FLAG = paint(16, 15, g => {
   for (const [x, y] of [[10, 5], [9, 6], [10, 6], [11, 6], [8, 7], [9, 7], [10, 7], [11, 7], [12, 7], [9, 8], [10, 8], [11, 8], [10, 9]]) px(g, '#ffffff', x, y);
 });
 
-// ---------------------------------------------------------------- warp swirl (shown while warping)
-const PORTAL = [0, 1, 2, 3, 4, 5].map(f => paint(20, 34, g => {
-  const cols = ['#2a0a5a', '#5a1ab8', '#8a4af0', '#c49aff', '#f0e0ff'];
-  for (let y = 0; y < 34; y++) for (let x = 0; x < 20; x++) {
-    const dx = (x + .5 - 10) / 9.5, dy = (y + .5 - 17) / 16.5, d = Math.hypot(dx, dy);
-    if (d > 1) continue;
-    if (d > .86) { px(g, '#1a0638', x, y); continue; }
-    const band = Math.floor((Math.atan2(dy, dx) / (Math.PI * 2) + 1) * 4 + d * 5 - f * 4 / 6);
-    px(g, cols[(band % 4 + 4) % 4 + (d < .28 ? 1 : 0)], x, y);
-  }
-}));
-
 // ---------------------------------------------------------------- scenery
 const CLOUD = blob(56, 28, [[14, 18, 9], [28, 13, 12], [42, 18, 9], [28, 19, 8]],
   (x, y, e, ins) => e ? '#a8d4ff' : !ins(x, y - 2) ? '#ffffff' : y > 20 ? '#dcecff' : '#ffffff');
@@ -470,7 +458,7 @@ function stopMusic() {
   music.gain.gain.linearRampToValueAtTime(0, t + .05);
 }
 function syncMusic() {
-  const want = (state === 'play' || state === 'remote') && musicOn && AC && AC.state === 'running';
+  const want = state === 'play' && musicOn && AC && AC.state === 'running';
   if (want && !music.on) startMusic(); else if (!want && music.on) stopMusic();
   music.speed = time < 100 ? 1.3 : 1;                 // "hurry up!" when time is low
 }
@@ -490,7 +478,7 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyJ' || (e.code === 'Enter' && state !== 'play')) jQueue = true;
   if (e.code === 'KeyM') toggleSound('music');
   if (e.code === 'KeyS') toggleSound('sfx');
-  if (e.code === 'KeyX') recallHome();
+  if (e.code === 'KeyX') leaveBuddy();
   if (e.code === 'KeyP') pQueue = true;
   if (e.code === 'Escape') togglePause();
   if (e.code === 'KeyN' && state === 'title') renamePlayer();
@@ -499,7 +487,6 @@ addEventListener('keyup', e => { keys[e.code] = false; });
 addEventListener('blur', () => {
   for (const k in keys) keys[k] = false;
   if (state === 'play') togglePause();
-  if (state === 'remote') sendTo(NET.host, { t: 'in', l: false, r: false, j: false, d: false, jp: NET.seq, pp: NET.pseq });
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') togglePause(); });
 
@@ -514,7 +501,7 @@ for (const b of touchEl.querySelectorAll('.tb')) {
     keys[k] = true; b.classList.add('down');
     if (k === 'KeyJ') jQueue = true;
     if (k === 'KeyP') pQueue = true;
-    if (k === 'KeyX') recallHome();
+    if (k === 'KeyX') leaveBuddy();
   };
   const up = e => { e.preventDefault(); keys[k] = false; b.classList.remove('down'); };
   b.addEventListener('pointerdown', down);
@@ -686,10 +673,10 @@ function resetPlayer() {
         jumps: 0, coyote: 0, buffer: 0, anim: 0, spin: 0, dead: false, visible: true, phase: 0, jHeld: false, ...FIGHT_FIELDS() };
   camX = prevCamX = clamp(p.x - VW * .42, 0, LW * TS - VW);
 }
-function startLevel() { buildLevel(); resetPlayer(); time = 300; flagY = 3 * TS; if (guest) spawnGuest(); }
+function startLevel() { buildLevel(); resetPlayer(); time = 300; flagY = 3 * TS; }
 function newGame() { score = 0; coinCount = 0; lives = 3; checkpoint = false; startLevel(); setState('play'); }
 const xBtn = document.querySelector('.tb.xx');
-function setState(s) { state = s; stateT = 0; xBtn.classList.toggle('show', s === 'remote' || s === 'porting'); }
+function setState(s) { state = s; stateT = 0; }
 function togglePause() {
   if (state === 'play') { pausedFrom = 'play'; setState('paused'); sfx.pause(); }
   else if (state === 'paused') { state = pausedFrom; sfx.pause(); }
@@ -745,24 +732,17 @@ function update(dt) {
   syncMusic();
   prevCamX = camX;
   if (p) { p.px = p.x; p.py = p.y; }
-  if (guest) { guest.px = guest.x; guest.py = guest.y; }
+  const away = !!(buddy || NET.pending);
+  if (away !== xBtn.classList.contains('show')) xBtn.classList.toggle('show', away);   // X (leave) only while joined
   if (enemies) for (const e of enemies) { e.px = e.x; e.py = e.y; }
   if (toast && (toast.t -= dt) <= 0) toast = null;
 
   switch (state) {
-    case 'title': if (jEdge) newGame(); return;
-    case 'over': case 'clear': if (jEdge && stateT > .8) newGame(); updateParts(dt); return;
+    case 'title': updateBuddy(dt); if (jEdge) newGame(); return;
+    case 'over': case 'clear': updateBuddy(dt); if (jEdge && stateT > .8) newGame(); updateParts(dt); return;
     case 'paused': if (jEdge) togglePause(); return;
-    case 'porting':
-      updateParts(dt);
-      if (stateT > 4) warpFailed('NO ANSWER FROM ' + NET.hostName);
-      return;
-    case 'remote':
-      netSendInputs(dt); updateGhost(dt); updateParts(dt);
-      if (NET.recallT > 0 && (NET.recallT -= dt) <= 0) comeHome(null, 'BACK HOME');   // other screen never answered
-      return;
     case 'dying':
-      updatePlayer(dt); updateParts(dt);
+      updatePlayer(dt); updateParts(dt); updateBuddy(dt);
       if (stateT > 2.6) {
         lives--;
         if (lives <= 0) { saveHi(); setState('over'); sfx.over(); }
@@ -775,7 +755,8 @@ function update(dt) {
     if (time <= 0) { time = 0; killPlayer(false); }
   }
   updatePlayer(dt);
-  if (state === 'play' || state === 'flag') { updateGuest(dt); updateFight(); updateEnemies(dt); }
+  updateBuddy(dt);
+  if (state === 'play' || state === 'flag') { updateFight(); updateEnemies(dt); }
   updateParts(dt);
   for (const b of bumps) b.t += dt;
   if (bumps.length && bumps.some(b => b.t >= .2)) {
@@ -801,6 +782,7 @@ function updatePlayer(dt) {
   }
   if (state === 'flag') return flagUpdate(dt);
   if (p.warp) { stepWarp(p, dt); return; }
+  if (NET.pending) { if ((NET.pending.t -= dt) <= 0) joinFailed('NO ANSWER FROM ' + NET.pending.name); return; }
 
   const dir = (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0);
   p.jHeld = !!keys.KeyJ;
@@ -815,7 +797,7 @@ function updatePlayer(dt) {
   collectCoins(p);
 }
 
-// Movement + jumping for any hero (the local player or a visiting guest).
+// Movement + jumping for the local hero.
 function heroPhysics(h, dir, jumpPressed, dt) {
   tickFight(h, dt);
   if (h.stun > 0) { dir = 0; jumpPressed = false; }          // reeling from a punch
@@ -899,25 +881,12 @@ function tryWarpDown() {
   if (NET.status !== 'online') return toastOnce(NET.status === 'offline' ? 'WARP PIPES OFFLINE' : 'WARP PIPES CONNECTING...');
   const o = pipeOwners()[i];
   if (!o) return toastOnce('NO PLAYER ON THIS PIPE');
-  if (guest) return toastOnce("CAN'T WARP WHILE " + guest.name + ' VISITS');
+  if (buddy) return toastOnce('PRESS X TO LEAVE ' + buddy.name + ' FIRST');
   const pr = NET.peers.get(o.id);
-  if (!pr || pr.g || pr.st === 'remote' || pr.st === 'porting') return toastOnce(o.name + ' IS BUSY');
-  startWarpIn(p, i, () => enterPortal(i));
+  if (!pr || pr.g) return toastOnce(o.name + ' IS BUSY');
+  startWarpIn(p, i, () => requestJoin(i));
 }
-function heroes() {
-  const hs = [];
-  if (state === 'play' && !p.dead && !p.warp) hs.push(p);
-  if (guest && !guest.dead && !guest.warp) hs.push(guest);
-  return hs;
-}
-// Run fn with the global score/coins/lives swapped for the guest's, so the shared
-// helpers (bump, addScore, addCoin) credit whoever actually did the thing.
-function asGuest(g, fn) {
-  const saved = [score, coinCount, lives];
-  score = g.score; coinCount = g.coins; lives = g.lives;
-  try { fn(); } finally { g.score = score; g.coins = coinCount; g.lives = lives; [score, coinCount, lives] = saved; }
-}
-const credit = (h, fn) => h === p ? fn() : asGuest(h, fn);
+function heroes() { return state === 'play' && !p.dead && !p.warp && p.visible ? [p] : []; }
 
 function killPlayer(fell) {
   if (p.dead) return;
@@ -970,10 +939,9 @@ function updateEnemies(dt) {
       if (h.vy > 0 && h.py + h.h <= e.py + 6) {
         e.dead = true; e.squash = .45;
         h.vy = h.jHeld ? -JUMP_V : -STOMP_V; h.jumps = 1;
-        credit(h, () => addScore(100, e.x, e.y - 10)); sfx.stomp();
+        addScore(100, e.x, e.y - 10); sfx.stomp();
       } else if (h.inv > 0) continue;
-      else if (h === p) killPlayer(false);
-      else guestDie(false);
+      else killPlayer(false);
     }
   }
   // enemies bounce off each other
@@ -1152,19 +1120,16 @@ function render(alpha) {
 }
 
 function drawPlayer(alpha) {
-  if (p && p.visible && state !== 'porting' && state !== 'remote') drawHero(p, HERO, alpha);
-  if (state === 'remote' && NET.ghost) {
-    ctx.globalAlpha = .45 + Math.sin(gameT * 6) * .1; drawHero(NET.ghost, HERO, alpha); ctx.globalAlpha = 1;
+  if (p && p.visible) drawHero(p, HERO, alpha);
+  if (buddy && buddy.vis) {                                 // the linked player, in their pipe colour
+    const col = colorOf(buddy.id);
+    drawHero(buddy, heroFor(col), alpha);
+    const bx = snapX(lerp(buddy.px, buddy.x, alpha)) + 6, by = Math.round(lerp(buddy.py, buddy.y, alpha));
+    drawText(buddy.name, bx, by - 11, col, 'center');
   }
-  if (guest) {
-    const col = colorOf(guest.id);
-    drawHero(guest, heroFor(col), alpha);
-    const gx = snapX(lerp(guest.px, guest.x, alpha)) + 6, gy = Math.round(lerp(guest.py, guest.y, alpha));
-    if (!guest.warp) drawText(guest.name, gx, gy - 11, col, 'center');
-  }
-  for (const h of [state === 'remote' || state === 'porting' ? null : p, guest, state === 'remote' ? NET.ghost : null]) {   // hit pips above anyone who's been punched
+  for (const h of [p && p.visible ? p : null, buddy && buddy.vis ? buddy : null]) {   // hit pips above anyone who's been punched
     if (!h || !h.hits || h.dead) continue;
-    const hx = snapX(lerp(h.px, h.x, alpha)) + 6 - 9, hy = Math.round(lerp(h.py, h.y, alpha)) - (h === guest ? 20 : 8);
+    const hx = snapX(lerp(h.px, h.x, alpha)) + 6 - 9, hy = Math.round(lerp(h.py, h.y, alpha)) - (h === buddy ? 20 : 8);
     drawPips(hx, hy, h.hits);
   }
 }
@@ -1215,7 +1180,8 @@ function drawHUD() {
   ctx.drawImage(COIN[0], c2 - 3, 15, 12, 12); drawText('x' + pad(coinCount, 2), c2 + 10, 18);
   drawText('TIME', c3, 8); drawText(pad(Math.ceil(time), 3), c3, 18, time < 60 && state === 'play' && Math.floor(gameT * 4) % 2 ? '#ff6050' : '#fff');
   drawText('LIVES', VW - 8, 8, '#fff', 'right'); drawText('x' + lives, VW - 8, 18, '#fff', 'right');
-  if (NET.status === 'online' && NET.peers.size) drawText('ONLINE ' + (NET.peers.size + 1), 8, VH - 14, '#e0c8ff');
+  if (buddy) drawText('PLAYING WITH ' + buddy.name + (isTouch ? '  (X LEAVES)' : '  (X TO LEAVE)'), 8, VH - 14, colorOf(buddy.id));
+  else if (NET.status === 'online' && NET.peers.size) drawText('ONLINE ' + (NET.peers.size + 1), 8, VH - 14, '#e0c8ff');
   if (state === 'play' || state === 'paused') {                // pause / resume button
     const { x, y, w, h } = PAUSE_BTN;
     ctx.fillStyle = 'rgba(20,10,40,.45)'; ctx.fillRect(x, y, w, h);
@@ -1262,7 +1228,7 @@ function drawOverlay() {
     drawText('J J  DOUBLE JUMP', VW / 2, y + 66, '#fff', 'center');
     drawText(isTouch ? 'P  PUNCH   II  PAUSE' : 'P  PUNCH   ESC  PAUSE', VW / 2, y + 78, '#fff', 'center');
     drawText(isTouch ? 'TAP ICONS FOR SOUND' : 'M  MUSIC   S  SOUND FX', VW / 2, y + 90, '#fff', 'center');
-    drawText('DOWN ON COLOR PIPE  X HOME', VW / 2, y + 102, '#ffe14a', 'center');
+    drawText('DOWN ON PIPE: JOIN  X: LEAVE', VW / 2, y + 102, '#ffe14a', 'center');
     if (blink) drawText(startMsg, VW / 2, y + 128, '#fff', 'center');
     if (hiScore) drawText('TOP ' + pad(hiScore, 6), VW / 2, y + 142, '#ffe14a', 'center');
     const net = NET.status === 'online' ? (NET.peers.size ? (NET.peers.size + 1) + ' PLAYERS ONLINE' : 'ONLY YOU ONLINE RIGHT NOW')
@@ -1284,17 +1250,6 @@ function drawOverlay() {
     drawText('SCORE ' + pad(score, 6), VW / 2, y + 40, '#fff', 'center');
     drawText('TOP   ' + pad(hiScore, 6), VW / 2, y + 54, '#fff', 'center');
     if (blink) drawText(isTouch ? 'TAP J TO PLAY AGAIN' : 'PRESS J TO PLAY AGAIN', VW / 2, y + 100, '#fff', 'center');
-  } else if (state === 'porting') {
-    ctx.fillStyle = 'rgba(20,0,50,.6)'; ctx.fillRect(0, 0, VW, VH);
-    const swirl = PORTAL[Math.floor(gameT * 10) % PORTAL.length];
-    ctx.drawImage(swirl, Math.round(VW / 2 - 20), 44, 40, 68);
-    drawText('WARPING TO', VW / 2, 126, '#e0c8ff', 'center');
-    drawText(NET.hostName, VW / 2, 142, '#ffe14a', 'center', 12);
-  } else if (state === 'remote') {
-    ctx.fillStyle = 'rgba(40,0,80,.18)'; ctx.fillRect(0, 0, VW, VH);
-    ctx.fillStyle = 'rgba(20,0,50,.7)'; ctx.fillRect(0, VH - 34, VW, 34);
-    drawText('GHOST MODE: YOU ARE ON ' + NET.hostName + "'S SCREEN", VW / 2, VH - 29, '#ffe14a', 'center');
-    drawText(NET.ghost ? 'PRESS X TO COME BACK HOME' : 'CONNECTING...', VW / 2, VH - 16, '#e0c8ff', 'center');
   }
   drawSoundButtons();
   if (koBanner) {
@@ -1313,16 +1268,16 @@ function drawOverlay() {
 // ============================================================================
 // Warp pipes. Everyone playing joins one lobby on a public MQTT relay (or a private
 // one with ?room=). Each other player online gets a coloured warp pipe; going DOWN it
-// hands your hero to that player's screen, and your own device turns into its
-// controller (showing a ghost of your hero) until you press X or run out of lives.
+// joins that player: you keep playing your own game, and you each see the other in
+// your own level until either of you presses X.
 // ============================================================================
 const BROKER = 'wss://broker.emqx.io:8084/mqtt';
 const MQTT_LIB = 'https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js';
 const NAME_A = ['RED', 'BLUE', 'GOLD', 'MINT', 'PINK', 'JADE', 'RUBY', 'SKY'];
 const NAME_B = ['FOX', 'OWL', 'CAT', 'FROG', 'BEAR', 'WOLF', 'BEE', 'YAK'];
 const NET = { id: Math.random().toString(36).slice(2, 10), name: '', base: '', client: null, status: 'connecting',
-  peers: new Map(), links: new Map(), host: null, hostName: '', pipe: 0, seq: 0, pseq: 0, lastSent: '', sendT: 0 };
-let guest = null, toast = null;
+  peers: new Map(), links: new Map(), pending: null, hitSeq: 0, pipe: 0, seq: 0, pseq: 0, lastSent: '', sendT: 0 };
+let toast = null;
 const cleanName = n => String(n || '').toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim().slice(0, 10) || 'PLAYER';
 const clampInt = (v, a, b) => clamp(Math.floor(+v || 0), a, b);
 try { NET.name = localStorage.getItem('jumpgame.name') || ''; } catch (e) {}
@@ -1389,10 +1344,10 @@ function iceGathered(pc) {
 function wireChannel(id, dc) {
   dc.onmessage = e => {
     let m; try { m = JSON.parse(e.data); } catch (err) { return; }
-    if (m && typeof m === 'object' && (m.t === 'in' || m.t === 'gstate')) { m.from = id; onNet('direct', m); }
+    if (m && typeof m === 'object' && (m.t === 'pose' || m.t === 'hit')) { m.from = id; onNet('direct', m); }
   };
 }
-async function openLink(id) {                       // the player who went down the warp pipe
+async function openLink(id) {                       // the player who joined
   if (!window.RTCPeerConnection) return;
   try {
     closeLink(id);
@@ -1402,7 +1357,7 @@ async function openLink(id) {                       // the player who went down 
     sendTo(id, { t: 'rtc-offer', sdp: pc.localDescription.sdp });
   } catch (e) { closeLink(id); }
 }
-async function acceptLink(id, sdp) {                // the screen the hero arrived on
+async function acceptLink(id, sdp) {                // the player who was joined
   if (!window.RTCPeerConnection || typeof sdp !== 'string' || sdp.length > 20000) return;
   try {
     closeLink(id);
@@ -1418,7 +1373,7 @@ function finishLink(id, sdp) {
   if (l && typeof sdp === 'string' && sdp.length < 20000 && !l.pc.remoteDescription) l.pc.setRemoteDescription({ type: 'answer', sdp }).catch(() => closeLink(id));
 }
 function announce() {
-  netPub(NET.base + '/presence', { t: 'here', name: NET.name, st: state, g: guest ? 1 : 0 });
+  netPub(NET.base + '/presence', { t: 'here', name: NET.name, st: state, g: buddy || NET.pending ? 1 : 0 });
   prunePeers();
 }
 function prunePeers() {
@@ -1426,9 +1381,9 @@ function prunePeers() {
   for (const [id, pr] of NET.peers) {
     if (now - pr.seen < 6500) continue;
     NET.peers.delete(id);
-    if (guest && guest.id === id) { showToast(guest.name + ' LEFT'); guest = null; }
+    if (buddy && buddy.id === id) leaveBuddy('LOST ' + buddy.name, false);
+    if (NET.pending && NET.pending.id === id) joinFailed('LOST ' + NET.pending.name);
     closeLink(id);
-    if ((state === 'remote' || state === 'porting') && NET.host === id) comeHome(null, 'LOST ' + NET.hostName);
   }
 }
 function onNet(topic, m) {
@@ -1437,150 +1392,104 @@ function onNet(topic, m) {
     NET.peers.set(m.from, { name: cleanName(m.name), st: String(m.st), g: !!m.g, seen: performance.now() });
     return;
   }
-  const fromHost = m.from === NET.host && (state === 'remote' || state === 'porting');
-  const fromGuest = guest && guest.id === m.from;
+  const fromBuddy = buddy && buddy.id === m.from, fromPending = NET.pending && NET.pending.id === m.from;
   switch (m.t) {
-    case 'port': receivePort(m); break;
-    case 'accept': if (fromHost && state === 'porting') { setState('remote'); NET.hostName = cleanName(m.name); sfx.djump(); openLink(m.from); } break;
-    case 'rtc-offer': if (fromGuest) acceptLink(m.from, m.sdp); break;
-    case 'rtc-answer': if (fromHost) finishLink(m.from, m.sdp); break;
-    case 'busy': if (fromHost) warpFailed(NET.hostName + ' IS BUSY'); break;
-    case 'gstate': if (fromHost) { applyStats(m); ghostTarget(m); } break;
-    case 'home': if (fromHost) comeHome(m, m.reason === 'out' ? 'OUT OF LIVES!' : 'WELCOME HOME!'); break;
-    case 'in':
-      if (!fromGuest) break;
-      guest.keys.l = !!m.l; guest.keys.r = !!m.r; guest.keys.j = !!m.j; guest.keys.d = !!m.d; guest.seen = performance.now();
-      if (+m.jp > guest.jp) { guest.jp = +m.jp; guest.jQueue = true; }
-      if (+m.pp > guest.pp) { guest.pp = +m.pp; guest.pQueue = true; }
-      break;
+    case 'join': onJoinRequest(m); break;
+    case 'join-ok': if (fromPending) onJoinOk(m); break;
+    case 'busy': if (fromPending) joinFailed(NET.pending.name + ' IS BUSY'); break;
+    case 'rtc-offer': if (fromBuddy) acceptLink(m.from, m.sdp); break;
+    case 'rtc-answer': if (fromBuddy) finishLink(m.from, m.sdp); break;
+    case 'pose': if (fromBuddy) onPose(m); break;
+    case 'hit': if (fromBuddy) onHit(m); break;
     case 'ko':
-      if (!fromHost) break;
-      koBanner = { t: 2, s: 'K.O.!' };
-      showToast(m.won ? 'YOU KNOCKED OUT ' + NET.hostName + '!' : 'KNOCKED OUT BY ' + NET.hostName, 3);
-      sfx.ko();
+      if (!fromBuddy) break;
+      koBanner = { t: 2, s: 'K.O.!' }; addScore(1000, buddy.x, buddy.y - 22);
+      showToast('YOU KNOCKED OUT ' + buddy.name + '!', 3); sfx.ko(); shake = .3;
       break;
-    case 'recall': if (fromGuest) { sparkle(guest.x + 6, guest.y + 8, colorOf(guest.id), 14, 100, .5); sendGuestHome('recall'); } break;
-    case 'leave': if (fromGuest) { showToast(guest.name + ' WENT HOME'); closeLink(guest.id); guest = null; } break;
+    case 'leave':
+      if (fromPending) joinFailed(NET.pending.name + ' LEFT');
+      else if (fromBuddy) leaveBuddy(buddy.name + ' LEFT YOUR GAME', false);
+      break;
   }
 }
-function applyStats(m) { score = clampInt(m.score, 0, 9999999); coinCount = clampInt(m.coins, 0, 99); lives = clampInt(m.lives, 0, 99); }
-
-// ---- this device went down a warp pipe: hand the hero to that pipe's player
-function enterPortal(i) {
+// ---- joining: going down a player's pipe links you with them. Each player keeps playing
+// their OWN game on their own screen; linked players simply appear in each other's level
+// (each device streams its own hero's pose straight to the other).
+// Punches are checked by the attacker and applied by the victim to their own hero.
+let buddy = null;                                          // the player I'm linked with (drawn from their poses)
+function requestJoin(i) {                                  // my hero just sank into pipe i
   const o = pipeOwners()[i];
   if (!o) { emergeFrom(p, i); return; }
-  NET.host = o.id; NET.hostName = o.name; NET.pipe = i; NET.lastSent = '';
-  sendTo(o.id, { t: 'port', name: NET.name, score, coins: coinCount, lives });
-  setState('porting');
+  NET.pipe = i;
+  NET.pending = { id: o.id, name: o.name, t: 4 };
+  p.visible = false;
+  sendTo(o.id, { t: 'join', name: NET.name });
+  showToast('JOINING ' + o.name + '...', 4);
 }
-// X: bring my hero back home from the other screen
-function recallHome() {
-  if (state === 'porting') { sendTo(NET.host, { t: 'leave' }); warpFailed('WARP CANCELLED'); return; }
-  if (state !== 'remote' || NET.recallT > 0) return;
-  sendTo(NET.host, { t: 'recall' });
-  NET.recallT = 3;
-  showToast('COMING HOME...');
-}
-function warpFailed(msg) { NET.host = null; setState('play'); emergeFrom(p, NET.pipe); showToast(msg); }
-// ---- ghost: while my hero is on another screen, mirror it (see-through) in my own level
-function ghostTarget(m) {
-  if (state !== 'remote') return;
-  const x = clamp(+m.x || 0, 0, LW * TS), y = clamp(+m.y || 0, -64, LH * TS + 64);
-  let g = NET.ghost;
-  if (!g) g = NET.ghost = { x, y, px: x, py: y, w: 12, h: 16, vx: 0, face: 1, anim: 0, onGround: true, spin: 0, dead: false,
-                            punchT: 0, inv: 0, hits: 0, stun: 0, tx: x, ty: y };
-  g.tx = x; g.ty = y; g.vx = +m.vx || 0; g.face = m.f < 0 ? -1 : 1; g.onGround = !!m.og;
-  g.punchT = m.pt ? .1 : 0; g.dead = !!m.d; g.hits = clampInt(m.h, 0, KO_HITS);
-  if (m.sp && g.spin <= 0) g.spin = .4;
-}
-function updateGhost(dt) {
-  const g = NET.ghost;
-  if (!g) return;
-  g.px = g.x; g.py = g.y;
-  const k = Math.min(1, dt * 14);
-  if (Math.abs(g.tx - g.x) > 96 || Math.abs(g.ty - g.y) > 96) { g.x = g.tx; g.y = g.ty; g.px = g.x; g.py = g.y; }   // teleport (respawn)
-  else { g.x += (g.tx - g.x) * k; g.y += (g.ty - g.y) * k; }
-  g.anim += Math.abs(g.vx) * dt;
-  if (g.spin > 0) g.spin -= dt;
-  followCam(g.x + g.w / 2, dt);
-}
-function netSendInputs(dt) {
-  const l = !!keys.ArrowLeft, r = !!keys.ArrowRight, j = !!keys.KeyJ, d = !!keys.ArrowDown;
-  if (jEdge) NET.seq++;
-  if (pEdge) NET.pseq++;
-  const sig = '' + l + r + j + d + NET.seq + ',' + NET.pseq;
-  NET.sendT -= dt;
-  if (sig !== NET.lastSent || NET.sendT <= 0) {           // send on change + a steady keep-alive
-    sendFast(NET.host, { t: 'in', l, r, j, d, jp: NET.seq, pp: NET.pseq });
-    NET.lastSent = sig; NET.sendT = fastLink(NET.host) ? .1 : .3;
-  }
-}
-function comeHome(m, msg) {
-  if (m) applyStats(m);
-  closeLink(NET.host); NET.host = null; NET.ghost = null; NET.recallT = 0;
+function joinFailed(msg) {
+  NET.pending = null;
+  emergeFrom(p, NET.pipe);
   showToast(msg);
-  if (lives <= 0) { saveHi(); setState('over'); sfx.over(); return; }
-  setState('play');
-  emergeFrom(p, clamp(NET.pipe, 0, PIPES.length - 1));     // pop back out of the pipe you left from
+}
+function linkBuddy(id, name, x, y) {
+  buddy = { id, name: cleanName(name), x, y, px: x, py: y, tx: x, ty: y, w: 12, h: 16, vx: 0, face: 1, anim: 0,
+            onGround: true, spin: 0, dead: false, punchT: 0, inv: 0, hits: 0, stun: 0, vis: true, seen: performance.now(), lastHit: 0 };
+  NET.sendT = 0;
+}
+function leaveBuddy(msg, notify = true) {               // X, or the other player left / disappeared
+  if (NET.pending) { if (notify) sendTo(NET.pending.id, { t: 'leave' }); joinFailed(msg || 'JOIN CANCELLED'); return; }
+  if (!buddy) return;
+  if (notify) sendTo(buddy.id, { t: 'leave' });
+  closeLink(buddy.id);
+  showToast(msg || 'LEFT ' + buddy.name + "'S GAME");
+  sparkle(buddy.x + 6, buddy.y + 8, colorOf(buddy.id), 12, 90, .5);
+  buddy = null;
+}
+function onJoinRequest(m) {
+  if ((buddy && buddy.id !== m.from) || NET.pending) { sendTo(m.from, { t: 'busy' }); return; }
+  linkBuddy(m.from, m.name, -100, -100);
+  buddy.vis = false;                                       // they appear once their first pose arrives
+  sendTo(m.from, { t: 'join-ok', name: NET.name, x: Math.round(p.x), y: Math.round(p.y) });
+  showToast(buddy.name + ' JOINED YOUR GAME!'); sfx.oneup();
+}
+function onJoinOk(m) {
+  const pend = NET.pending; NET.pending = null;
+  linkBuddy(m.from, m.name, clamp(+m.x || 0, 0, LW * TS), clamp(+m.y || 0, -64, LH * TS));
+  // land next to them in my own level: out of a nearby pipe if there is one, else drop in from the sky
+  const bx = buddy.x;
+  let best = -1, bestD = 1e9;
+  PIPES.forEach((pp, i) => { const d = Math.abs(pp.x * TS + 16 - bx); if (d < bestD) { bestD = d; best = i; } });
+  if (best >= 0 && bestD < 10 * TS) emergeFrom(p, best);
+  else { Object.assign(p, { x: clamp(bx + 24, 16, LW * TS - 32), y: -20, vx: 0, vy: 0, visible: true, spin: .4, jumps: 2 }); p.px = p.x; p.py = p.y; }
   camX = prevCamX = clamp(p.x - VW * .42, 0, LW * TS - VW);
+  showToast('YOU JOINED ' + buddy.name + '!'); sfx.djump();
+  openLink(m.from);
+}
+function onPose(m) {
+  const b = buddy;
+  b.seen = performance.now();
+  b.tx = clamp(+m.x || 0, -64, LW * TS + 64); b.ty = clamp(+m.y || 0, -64, LH * TS + 64);
+  if (!b.vis && m.v) { b.x = b.tx; b.y = b.ty; b.px = b.x; b.py = b.y; }
+  b.vis = !!m.v; b.vx = +m.vx || 0; b.face = m.f < 0 ? -1 : 1; b.onGround = !!m.og;
+  b.punchT = m.pt ? .1 : 0; b.dead = !!m.d; b.hits = clampInt(m.h, 0, KO_HITS); b.inv = m.iv ? .1 : 0;
+  if (m.sp && b.spin <= 0) b.spin = .4;
+}
+function updateBuddy(dt) {
+  const b = buddy;
+  if (!b) return;
+  b.px = b.x; b.py = b.y;
+  if (Math.abs(b.tx - b.x) > 96 || Math.abs(b.ty - b.y) > 96) { b.x = b.tx; b.y = b.ty; b.px = b.x; b.py = b.y; }   // respawn / teleport
+  else { const k = Math.min(1, dt * 14); b.x += (b.tx - b.x) * k; b.y += (b.ty - b.y) * k; }
+  b.anim += Math.abs(b.vx) * dt;
+  if (b.spin > 0) b.spin -= dt;
+  if ((NET.sendT -= dt) <= 0) {                          // stream my pose: 20/s direct, 5/s over the relay
+    NET.sendT = fastLink(b.id) ? .05 : .2;
+    sendFast(b.id, { t: 'pose', x: Math.round(p.x), y: Math.round(p.y), vx: Math.round(p.vx), f: p.face, og: p.onGround ? 1 : 0,
+      pt: p.punchT > 0 ? 1 : 0, sp: p.spin > 0 ? 1 : 0, h: p.hits, d: p.dead ? 1 : 0, iv: p.inv > 0 ? 1 : 0,
+      v: p.visible && state !== 'title' ? 1 : 0 });
+  }
 }
 
-// ---- another device's hero arrives on this screen
-function receivePort(m) {
-  if ((guest && guest.id !== m.from) || state === 'remote' || state === 'porting') { sendTo(m.from, { t: 'busy' }); return; }
-  if (!['play', 'flag', 'paused', 'dying'].includes(state)) newGame();
-  guest = { id: m.from, name: cleanName(m.name), score: clampInt(m.score, 0, 9999999), coins: clampInt(m.coins, 0, 99),
-            lives: clampInt(m.lives, 1, 99), keys: { l: false, r: false, j: false, d: false }, jp: 0, jQueue: false, pp: 0, pQueue: false, sendT: 0 };
-  spawnGuest();
-  sendTo(m.from, { t: 'accept', name: NET.name });
-  showToast(guest.name + ' WARPED IN!'); sfx.oneup();
-}
-function spawnGuest() {
-  const g = guest;
-  const tx = clamp(Math.floor((p.x + p.w / 2) / TS) + 2, Math.ceil(camX / TS) + 1, Math.floor((camX + VW) / TS) - 2);
-  Object.assign(g, { x: tx * TS + 2, y: -20, w: 12, h: 16, vx: 0, vy: 0, onGround: false, face: -1, jumps: 2, coyote: 0,
-                     buffer: 0, anim: 0, spin: .4, dead: false, deadT: 0, jHeld: false, warp: null, seen: performance.now(), ...FIGHT_FIELDS() });
-  g.px = g.x; g.py = g.y;
-  // rise out of a pipe on screen (their own colour if visible, else the one nearest the host); else drop in from the sky
-  const onScreen = PIPES.map((pp, i) => ({ pp, i })).filter(({ pp }) => pp.x * TS >= camX && pp.x * TS + 32 <= camX + VW);
-  if (onScreen.length) {
-    const own = onScreen.find(({ i }) => (pipeOwners()[i] || {}).id === g.id);
-    const near = onScreen.sort((a, b) => Math.abs(a.pp.x * TS - p.x) - Math.abs(b.pp.x * TS - p.x))[0];
-    emergeFrom(g, (own || near).i);
-  } else { g.spin = .4; portalBurst(g.x + 6, 10); }
-}
-function updateGuest(dt) {
-  const g = guest;
-  if (!g) return;
-  if ((g.sendT -= dt) <= 0) {                               // stats + pose for the owner's ghost (also while KO'd)
-    g.sendT = fastLink(g.id) ? .05 : .2;                     // 20/s direct, 5/s over the relay
-    sendFast(g.id, { t: 'gstate', score: g.score, coins: g.coins, lives: g.lives,
-      x: Math.round(g.x), y: Math.round(g.y), vx: Math.round(g.vx), f: g.face, og: g.onGround ? 1 : 0,
-      pt: g.punchT > 0 ? 1 : 0, sp: g.spin > 0 ? 1 : 0, h: g.hits, d: g.dead ? 1 : 0 });
-  }
-  if (g.dead) {
-    g.vy = Math.min(g.vy + GRAV * dt, MAX_FALL * 1.5); g.y += g.vy * dt; g.x += g.vx * dt;
-    if ((g.deadT -= dt) <= 0) { if (g.lives > 0) spawnGuest(); else sendGuestHome('out'); }
-    return;
-  }
-  if (g.warp) { stepWarp(g, dt); return; }
-  if (performance.now() - g.seen > 1500) g.keys.l = g.keys.r = g.keys.j = g.keys.d = false;   // controller went quiet
-  const dir = (g.keys.r ? 1 : 0) - (g.keys.l ? 1 : 0);
-  const jump = g.jQueue; g.jQueue = false; g.jHeld = g.keys.j;
-  if (g.pQueue) { g.pQueue = false; tryPunch(g); }
-  asGuest(g, () => { heroPhysics(g, dir, jump, dt); collectCoins(g); });
-  if (state === 'play') {                                   // keep the guest on the host's screen
-    if (g.x < camX) { g.x = camX; g.vx = Math.max(0, g.vx); }
-    else if (g.x > camX + VW - g.w) { g.x = camX + VW - g.w; g.vx = Math.min(0, g.vx); }
-  }
-  if (g.y > LH * TS + 8) guestDie(true);
-}
-function guestDie(fell) {
-  const g = guest;
-  if (!g || g.dead) return;
-  g.dead = true; g.lives--; g.vx = 0; g.vy = fell ? 0 : -400; g.spin = 0; g.deadT = 1.6;
-  sfx.bump();
-}
 // ---- fighting: P throws a punch; 3 clean hits (not while the target is still flashing) = K.O.
 const PUNCH_TIME = .2, PUNCH_ACTIVE = .12, PUNCH_CD = .32, PUNCH_REACH = 14, KO_HITS = 3;
 let koBanner = null;
@@ -1599,41 +1508,37 @@ function tickFight(h, dt) {
 }
 function fistOf(h) { return { x: h.face > 0 ? h.x + h.w - 2 : h.x - PUNCH_REACH + 2, y: h.y + 3, w: PUNCH_REACH, h: 9 }; }
 function updateFight() {
-  const fighters = heroes();
-  for (const a of fighters) {
-    if (a.punchT <= PUNCH_TIME - PUNCH_ACTIVE || a.punchHit) continue;
-    const fist = fistOf(a);
-    for (const t of fighters) {
-      if (t === a || t.dead || t.inv > 0 || !overlap(fist, t)) continue;
-      a.punchHit = true; landPunch(a, t); break;
-    }
-    if (a.punchHit) continue;
-    for (const e of enemies) {                                  // punches also flatten enemies
-      if (!e.active || e.dead || !overlap(fist, e)) continue;
-      e.dead = true; e.flipped = true; e.vy = -260; e.vx = a.face * 90;
-      credit(a, () => addScore(100, e.x, e.y - 8)); sfx.punch(); a.punchHit = true; break;
-    }
+  if (p.dead || p.punchT <= PUNCH_TIME - PUNCH_ACTIVE || p.punchHit) return;
+  const fist = fistOf(p);
+  if (buddy && buddy.vis && !buddy.dead && buddy.inv <= 0 && overlap(fist, buddy)) {
+    p.punchHit = true;
+    const hit = { t: 'hit', f: p.face, hid: ++NET.hitSeq };
+    sendFast(buddy.id, hit); sendTo(buddy.id, hit);         // fast path + reliable path (deduped by hid)
+    addScore(100, buddy.x, buddy.y - 12);
+    sparkle(p.face > 0 ? buddy.x : buddy.x + buddy.w, buddy.y + 6, '#fff6b0', 8, 90, .3);
+    buddy.inv = .5; shake = .1; sfx.punch();
+    return;
+  }
+  for (const e of enemies) {                                // punches also flatten enemies
+    if (!e.active || e.dead || !overlap(fist, e)) continue;
+    e.dead = true; e.flipped = true; e.vy = -260; e.vx = p.face * 90;
+    addScore(100, e.x, e.y - 8); sfx.punch(); p.punchHit = true; break;
   }
 }
-function landPunch(a, t) {
-  t.hits++; t.hitDecay = 6; t.inv = .5; t.stun = .35;
-  t.vx = a.face * 230; t.vy = -200; t.onGround = false; t.face = -a.face;
-  credit(a, () => addScore(100, t.x, t.y - 12));
-  sparkle(a.face > 0 ? t.x : t.x + t.w, t.y + 6, '#fff6b0', 8, 90, .3);
+function onHit(m) {                                        // the other player's punch landed on me
+  if (+m.hid <= buddy.lastHit) return;
+  buddy.lastHit = +m.hid;
+  if (state !== 'play' || p.dead || p.inv > 0 || !p.visible) return;
+  const f = m.f < 0 ? -1 : 1;
+  p.hits++; p.hitDecay = 6; p.inv = .5; p.stun = .35;
+  p.vx = f * 230; p.vy = -200; p.onGround = false; p.face = -f;
+  sparkle(f > 0 ? p.x : p.x + p.w, p.y + 6, '#fff6b0', 8, 90, .3);
   shake = .15; sfx.punch();
-  if (t.hits >= KO_HITS) knockOut(a, t);
-}
-function knockOut(a, t) {
-  t.hits = 0;
-  koBanner = { t: 2, s: 'K.O.!' };
-  credit(a, () => addScore(1000, t.x, t.y - 22));
-  sfx.ko(); shake = .3;
-  if (t === p) {                                              // the host got knocked out by the guest
-    lives--; p.dead = true; p.koT = 1.6; p.vx = a.face * 260; p.vy = -460; p.punchT = 0;
-    if (guest) sendTo(guest.id, { t: 'ko', won: true });
-  } else {                                                    // the guest got knocked out
-    guestDie(false); t.vx = a.face * 260; t.vy = -460;
-    sendTo(t.id, { t: 'ko', won: false });
+  if (p.hits >= KO_HITS) {
+    p.hits = 0; lives--; p.dead = true; p.koT = 1.6; p.vx = f * 260; p.vy = -460; p.punchT = 0;
+    koBanner = { t: 2, s: 'K.O.!' }; sfx.ko(); shake = .3;
+    showToast('KNOCKED OUT BY ' + buddy.name, 3);
+    sendTo(buddy.id, { t: 'ko' });
   }
 }
 function recoverHost() {
@@ -1642,17 +1547,8 @@ function recoverHost() {
   Object.assign(p, { x, y: -20, vx: 0, vy: 0, dead: false, jumps: 2, spin: .4, inv: 1.5, stun: 0, hits: 0 });
   p.px = p.x; p.py = p.y;
 }
-
-function sendGuestHome(reason) {
-  const g = guest;
-  sendTo(g.id, { t: 'home', reason, score: g.score, coins: g.coins, lives: g.lives });
-  closeLink(g.id);
-  showToast(g.name + (reason === 'out' ? ' IS OUT!' : ' WENT HOME'));
-  guest = null;
-}
 addEventListener('pagehide', () => {
-  if (guest) sendGuestHome('leave');
-  if (state === 'remote' || state === 'porting') sendTo(NET.host, { t: 'leave' });
+  if (buddy || NET.pending) leaveBuddy('', true);
   netPub(NET.base + '/presence', { t: 'bye' });
 });
 
