@@ -63,7 +63,7 @@
 // Constants
 // ============================================================================
 const TS = 16, LH = 15, LW = 212, VH = 240;
-const VERSION = 'V3.0';                 // shown on the title screen; bump on each release
+const VERSION = 'V3.1';                 // shown on the title screen; bump on each release
 const STEP = 1 / 120;                    // fixed physics step (render is interpolated)
 const GRAV = 1500, JUMP_V = 470, STOMP_V = 330, MAX_FALL = 520;
 const ACC = 700, DEC = 900, AIR_DEC = 400, MAX_VX = 140;
@@ -735,7 +735,7 @@ function update(dt) {
   const away = !!(buddy || NET.pending);
   if (away !== xBtn.classList.contains('show')) xBtn.classList.toggle('show', away);   // X (leave) only while joined
   if (enemies) for (const e of enemies) { e.px = e.x; e.py = e.y; }
-  if (toast && (toast.t -= dt) <= 0) toast = null;
+  if (toasts.length) toasts = toasts.filter(x => (x.t -= dt) > 0);
 
   switch (state) {
     case 'title': updateBuddy(dt); if (jEdge) newGame(); return;
@@ -746,13 +746,13 @@ function update(dt) {
       if (stateT > 2.6) {
         lives--;
         if (lives <= 0) { saveHi(); setState('over'); sfx.over(); }
-        else { startLevel(); setState('play'); }
+        else { startLevel(); setState('play'); showToast(livesMsg(lives), 2.5); }
       }
       return;
   }
   if (state === 'play') {
     time -= dt;
-    if (time <= 0) { time = 0; killPlayer(false); }
+    if (time <= 0) { time = 0; killPlayer(false, 'time'); }
   }
   updatePlayer(dt);
   updateBuddy(dt);
@@ -790,7 +790,7 @@ function updatePlayer(dt) {
   if (pEdge) tryPunch(p);
   heroPhysics(p, dir, jEdge, dt);
 
-  if (p.y > LH * TS + 8) killPlayer(true);
+  if (p.y > LH * TS + 8) killPlayer(true, 'pit');
   if (p.x > CHECKPOINT_X * TS) checkpoint = true;
   if (p.x + p.w >= FLAGX * TS - 1 && state === 'play') startFlag();
 
@@ -874,7 +874,7 @@ function stepWarp(h, dt) {
   h.warp = null;
   if (w.mode === 'in') w.done(); else { h.onGround = true; h.inv = Math.max(h.inv || 0, .6); }
 }
-const toastOnce = msg => { if (!toast || toast.s !== msg) showToast(msg); };
+const toastOnce = msg => { if (!toasts.some(x => x.s === msg)) showToast(msg); };
 function tryWarpDown() {
   const i = pipeUnder(p);
   if (i === null) return;
@@ -888,11 +888,17 @@ function tryWarpDown() {
 }
 function heroes() { return state === 'play' && !p.dead && !p.warp && p.visible ? [p] : []; }
 
-function killPlayer(fell) {
+const DEATH_MSG = { pit: ['YOU FELL IN A PIT!', 'FELL IN A PIT'], enemy: ['A BLORB GOT YOU!', 'GOT HIT BY A BLORB'],
+                    time: ["TIME'S UP!", 'RAN OUT OF TIME'], ko: ['', 'WAS KNOCKED OUT'] };
+const livesMsg = n => n <= 0 ? 'NO LIVES LEFT!' : n === 1 ? 'LAST LIFE!' : n + ' LIVES LEFT';
+function killPlayer(fell, cause = 'enemy') {
   if (p.dead) return;
   p.dead = true; p.vx = 0; p.vy = fell ? 0 : -430; p.spin = 0;
   setState('dying'); sfx.die();
+  showToast(DEATH_MSG[cause][0], 2.6);
+  tellBuddyDied(cause, lives - 1);                         // the life is taken when the death animation ends
 }
+function tellBuddyDied(cause, left) { if (buddy) sendTo(buddy.id, { t: 'died', cause, left }); }
 
 function bump(tx, ty) {
   const t = getT(tx, ty);
@@ -941,7 +947,7 @@ function updateEnemies(dt) {
         h.vy = h.jHeld ? -JUMP_V : -STOMP_V; h.jumps = 1;
         addScore(100, e.x, e.y - 10); sfx.stomp();
       } else if (h.inv > 0) continue;
-      else killPlayer(false);
+      else killPlayer(false, 'enemy');
     }
   }
   // enemies bounce off each other
@@ -1125,7 +1131,7 @@ function drawPlayer(alpha) {
     const col = colorOf(buddy.id);
     drawHero(buddy, heroFor(col), alpha);
     const bx = snapX(lerp(buddy.px, buddy.x, alpha)) + 6, by = Math.round(lerp(buddy.py, buddy.y, alpha));
-    drawText(buddy.name, bx, by - 11, col, 'center');
+    drawText(buddy.name + ' x' + (buddy.lives ?? '?'), bx, by - 11, col, 'center');
   }
   for (const h of [p && p.visible ? p : null, buddy && buddy.vis ? buddy : null]) {   // hit pips above anyone who's been punched
     if (!h || !h.hits || h.dead) continue;
@@ -1180,6 +1186,7 @@ function drawHUD() {
   ctx.drawImage(COIN[0], c2 - 3, 15, 12, 12); drawText('x' + pad(coinCount, 2), c2 + 10, 18);
   drawText('TIME', c3, 8); drawText(pad(Math.ceil(time), 3), c3, 18, time < 60 && state === 'play' && Math.floor(gameT * 4) % 2 ? '#ff6050' : '#fff');
   drawText('LIVES', VW - 8, 8, '#fff', 'right'); drawText('x' + lives, VW - 8, 18, '#fff', 'right');
+  if (buddy && buddy.lives !== undefined) drawText(buddy.name + ' x' + buddy.lives, VW - 8, 30, colorOf(buddy.id), 'right');
   if (buddy) drawText('PLAYING WITH ' + buddy.name + (isTouch ? '  (X LEAVES)' : '  (X TO LEAVE)'), 8, VH - 14, colorOf(buddy.id));
   else if (NET.status === 'online' && NET.peers.size) drawText('ONLINE ' + (NET.peers.size + 1), 8, VH - 14, '#e0c8ff');
   if (state === 'play' || state === 'paused') {                // pause / resume button
@@ -1257,12 +1264,12 @@ function drawOverlay() {
     drawText(koBanner.s, VW / 2 + 2, VH / 2 - 40 + 2, '#1a1020', 'center', sz);
     drawText(koBanner.s, VW / 2, VH / 2 - 40, Math.floor(gameT * 8) % 2 ? '#ffe14a' : '#ff3a3a', 'center', sz);
   }
-  if (toast) {
-    ctx.font = '8px ' + FONT;
-    const w = Math.ceil(ctx.measureText(toast.s).width) + 16;
-    ctx.fillStyle = 'rgba(20,0,50,.75)'; ctx.fillRect(Math.round((VW - w) / 2), 34, w, 18);
-    drawText(toast.s, VW / 2, 39, '#fff', 'center');
-  }
+  ctx.font = '8px ' + FONT;
+  toasts.forEach((m, i) => {
+    const w = Math.ceil(ctx.measureText(m.s).width) + 16, y = 34 + i * 20;
+    ctx.fillStyle = 'rgba(20,0,50,.75)'; ctx.fillRect(Math.round((VW - w) / 2), y, w, 18);
+    drawText(m.s, VW / 2, y + 5, '#fff', 'center');
+  });
 }
 
 // ============================================================================
@@ -1277,13 +1284,13 @@ const NAME_A = ['RED', 'BLUE', 'GOLD', 'MINT', 'PINK', 'JADE', 'RUBY', 'SKY'];
 const NAME_B = ['FOX', 'OWL', 'CAT', 'FROG', 'BEAR', 'WOLF', 'BEE', 'YAK'];
 const NET = { id: Math.random().toString(36).slice(2, 10), name: '', base: '', client: null, status: 'connecting',
   peers: new Map(), links: new Map(), pending: null, hitSeq: 0, pipe: 0, seq: 0, pseq: 0, lastSent: '', sendT: 0 };
-let toast = null;
+let toasts = [];                                     // stacked on-screen messages (newest last)
 const cleanName = n => String(n || '').toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim().slice(0, 10) || 'PLAYER';
 const clampInt = (v, a, b) => clamp(Math.floor(+v || 0), a, b);
 try { NET.name = localStorage.getItem('jumpgame.name') || ''; } catch (e) {}
 if (!NET.name) NET.name = NAME_A[Math.random() * 8 | 0] + ' ' + NAME_B[Math.random() * 8 | 0];
 
-function showToast(msg, t = 2.5) { toast = { s: msg, t }; }
+function showToast(msg, t = 2.5) { toasts = toasts.filter(x => x.s !== msg).concat({ s: msg, t }).slice(-3); }
 function renamePlayer() {
   const n = prompt('Your player name (shown on other screens):', NET.name);
   for (const k in keys) keys[k] = false;
@@ -1401,10 +1408,16 @@ function onNet(topic, m) {
     case 'rtc-answer': if (fromBuddy) finishLink(m.from, m.sdp); break;
     case 'pose': if (fromBuddy) onPose(m); break;
     case 'hit': if (fromBuddy) onHit(m); break;
+    case 'died':
+      if (!fromBuddy || !DEATH_MSG[m.cause]) break;
+      showToast(buddy.name + ' ' + DEATH_MSG[m.cause][1], 3);
+      showToast(clampInt(m.left, 0, 99) > 0 ? buddy.name + ': ' + livesMsg(clampInt(m.left, 0, 99)) : buddy.name + ' IS OUT OF LIVES!', 3);
+      break;
     case 'ko':
       if (!fromBuddy) break;
       koBanner = { t: 2, s: 'K.O.!' }; addScore(1000, buddy.x, buddy.y - 22);
-      showToast('YOU KNOCKED OUT ' + buddy.name + '!', 3); sfx.ko(); shake = .3;
+      showToast('YOU KNOCKED OUT ' + buddy.name + '!', 3); showToast(buddy.name + ': ' + livesMsg(clampInt(m.left, 0, 99)), 3);
+      sfx.ko(); shake = .3;
       break;
     case 'leave':
       if (fromPending) joinFailed(NET.pending.name + ' LEFT');
@@ -1471,7 +1484,7 @@ function onPose(m) {
   b.tx = clamp(+m.x || 0, -64, LW * TS + 64); b.ty = clamp(+m.y || 0, -64, LH * TS + 64);
   if (!b.vis && m.v) { b.x = b.tx; b.y = b.ty; b.px = b.x; b.py = b.y; }
   b.vis = !!m.v; b.vx = +m.vx || 0; b.face = m.f < 0 ? -1 : 1; b.onGround = !!m.og;
-  b.punchT = m.pt ? .1 : 0; b.dead = !!m.d; b.hits = clampInt(m.h, 0, KO_HITS); b.inv = m.iv ? .1 : 0;
+  b.punchT = m.pt ? .1 : 0; b.dead = !!m.d; b.hits = clampInt(m.h, 0, KO_HITS); b.inv = m.iv ? .1 : 0; b.lives = clampInt(m.lv, 0, 99);
   if (m.sp && b.spin <= 0) b.spin = .4;
 }
 function updateBuddy(dt) {
@@ -1486,7 +1499,7 @@ function updateBuddy(dt) {
     NET.sendT = fastLink(b.id) ? .05 : .2;
     sendFast(b.id, { t: 'pose', x: Math.round(p.x), y: Math.round(p.y), vx: Math.round(p.vx), f: p.face, og: p.onGround ? 1 : 0,
       pt: p.punchT > 0 ? 1 : 0, sp: p.spin > 0 ? 1 : 0, h: p.hits, d: p.dead ? 1 : 0, iv: p.inv > 0 ? 1 : 0,
-      v: p.visible && state !== 'title' ? 1 : 0 });
+      v: p.visible && state !== 'title' ? 1 : 0, lv: lives });
   }
 }
 
@@ -1538,11 +1551,12 @@ function onHit(m) {                                        // the other player's
     p.hits = 0; lives--; p.dead = true; p.koT = 1.6; p.vx = f * 260; p.vy = -460; p.punchT = 0;
     koBanner = { t: 2, s: 'K.O.!' }; sfx.ko(); shake = .3;
     showToast('KNOCKED OUT BY ' + buddy.name, 3);
-    sendTo(buddy.id, { t: 'ko' });
+    sendTo(buddy.id, { t: 'ko', left: lives });
   }
 }
 function recoverHost() {
   if (lives <= 0) { saveHi(); setState('over'); sfx.over(); return; }
+  showToast(livesMsg(lives), 2.5);
   const x = clamp(camX + VW * .4, 16, LW * TS - 32);
   Object.assign(p, { x, y: -20, vx: 0, vy: 0, dead: false, jumps: 2, spin: .4, inv: 1.5, stun: 0, hits: 0 });
   p.px = p.x; p.py = p.y;
