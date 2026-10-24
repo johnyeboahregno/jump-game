@@ -31,6 +31,12 @@
   .tb.pp.down { background: rgba(255,210,60,.75); }
   .tb svg { width: 30px; height: 30px; fill: #fff; }
   .pad.act { gap: 10px; align-items: flex-end; }
+  /* left pad: left/right on top, down centred underneath */
+  .pad.dpad { display: grid; grid-template-columns: 64px 64px; grid-template-areas: "l r" "d d"; gap: 8px 14px; }
+  .pad.dpad .tb { width: 64px; height: 64px; }
+  .pad.dpad [data-k=ArrowLeft] { grid-area: l; }
+  .pad.dpad [data-k=ArrowRight] { grid-area: r; }
+  .pad.dpad [data-k=ArrowDown] { grid-area: d; justify-self: center; }
   .pad.act .tb { width: 50px; height: 50px; font-size: 13px; border-width: 2px; }
   .pad.act .tb.j { width: 56px; height: 56px; }
   .tb.xx { background: rgba(160,80,240,.5); display: none; }
@@ -40,7 +46,7 @@
 <body>
 <canvas id="game" tabindex="0"></canvas>
 <div id="touch">
-  <div class="pad">
+  <div class="pad dpad">
     <button class="tb" data-k="ArrowLeft" aria-label="Left"><svg viewBox="0 0 24 24"><path d="M16 3 5 12l11 9z"/></svg></button>
     <button class="tb" data-k="ArrowDown" aria-label="Down (enter pipe)"><svg viewBox="0 0 24 24"><path d="M3 8h18l-9 11z"/></svg></button>
     <button class="tb" data-k="ArrowRight" aria-label="Right"><svg viewBox="0 0 24 24"><path d="M8 3l11 9-11 9z"/></svg></button>
@@ -57,7 +63,7 @@
 // Constants
 // ============================================================================
 const TS = 16, LH = 15, LW = 212, VH = 240;
-const VERSION = 'V2.5';                 // shown on the title screen; bump on each release
+const VERSION = 'V2.6';                 // shown on the title screen; bump on each release
 const STEP = 1 / 120;                    // fixed physics step (render is interpolated)
 const GRAV = 1500, JUMP_V = 470, STOMP_V = 330, MAX_FALL = 520;
 const ACC = 700, DEC = 900, AIR_DEC = 400, MAX_VX = 140;
