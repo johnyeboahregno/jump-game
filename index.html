@@ -45,6 +45,7 @@
 // Constants
 // ============================================================================
 const TS = 16, LH = 15, LW = 212, VH = 240;
+const VERSION = 'V1.2';                 // shown on the title screen; bump on each release
 const STEP = 1 / 120;                    // fixed physics step (render is interpolated)
 const GRAV = 1500, JUMP_V = 470, STOMP_V = 330, MAX_FALL = 520;
 const ACC = 700, DEC = 900, AIR_DEC = 400, MAX_VX = 140;
@@ -1068,6 +1069,7 @@ function drawOverlay() {
   if (state === 'title') {
     const { y } = panel(Math.min(VW - 24, 232), 92);
     drawText('JUMP GAME', VW / 2, y + 14, '#ffe14a', 'center', 16);
+    drawText(VERSION, VW - 6, VH - 12, 'rgba(255,255,255,.7)', 'right');
     drawText('ARROWS  MOVE', VW / 2, y + 42, '#fff', 'center');
     drawText('J  JUMP', VW / 2, y + 54, '#fff', 'center');
     drawText('J J  DOUBLE JUMP', VW / 2, y + 66, '#fff', 'center');
