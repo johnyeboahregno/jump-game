@@ -49,6 +49,7 @@ const STEP = 1 / 120;                    // fixed physics step (render is interp
 const GRAV = 1500, JUMP_V = 470, STOMP_V = 330, MAX_FALL = 520;
 const ACC = 700, DEC = 900, AIR_DEC = 400, MAX_VX = 140;
 const FLAGX = 202, CASTLE_X = 205, CHECKPOINT_X = 100;
+const PORTALS = [29, 140];               // tile columns of the network portals
 const SOLID_FROM = 1;                    // any tile id >= 1 is solid
 // Tile ids
 const GROUND = 1, BRICK = 2, QBLOCK = 3, USED = 4, CRATE = 5, HARD = 6,
@@ -100,7 +101,7 @@ const HEAD = [
   '....SSSSSKKKK...',
   '.....SSSSSSS....',
 ];
-const HERO = {
+const makeHero = pal => ({
   idle: pair(fromRows([...HEAD,
     '....TTTTYTTT....',
     '...TTTTTTTTTT...',
@@ -108,7 +109,7 @@ const HERO = {
     '..SS.tTTTTt.SS..',
     '....PPP..PPP....',
     '...OOOO..OOOO...',
-    '...OOOO..OOOO...'], HERO_PAL)),
+    '...OOOO..OOOO...'], pal)),
   walk1: pair(fromRows([...HEAD,
     '....TTTTYTTT....',
     '..STTTTTTTTT....',
@@ -116,7 +117,7 @@ const HERO = {
     '....tTTTTTtSS...',
     '...PPPP..PPP....',
     '..OOOO....OOOO..',
-    '.OOOO......OOO..'], HERO_PAL)),
+    '.OOOO......OOO..'], pal)),
   walk2: pair(fromRows([...HEAD,
     '....TTTTYTTT....',
     '...TTTTTTTTT....',
@@ -124,7 +125,7 @@ const HERO = {
     '...SStTTTTSS....',
     '.....PPPPP......',
     '.....OOOOO......',
-    '....OOOOOO......'], HERO_PAL)),
+    '....OOOOOO......'], pal)),
   jump: pair(fromRows([...HEAD,
     '..S.TTTTYTTT.S..',
     '..STTTTTTTTTTS..',
@@ -132,8 +133,11 @@ const HERO = {
     '....tTTTTTTt....',
     '...PPP...PPP....',
     '..OOO.....OOO...',
-    '..OO.......OO...'], HERO_PAL)),
-};
+    '..OO.......OO...'], pal)),
+});
+const HERO = makeHero(HERO_PAL);
+// visiting players from another screen get a pink cap + blue hoodie
+const HERO2 = makeHero({ ...HERO_PAL, C: '#e8408a', c: '#a01a5a', T: '#3ac0ff', t: '#1a7ac8', Y: '#ffffff' });
 
 // ---------------------------------------------------------------- enemy "Blorb"
 const EN_PAL = { P: '#8a3ab8', L: '#c98af0', D: '#4a1a6a', K: '#1a0a20', W: '#ffffff', F: '#3a1a10' };
@@ -257,6 +261,18 @@ const FLAG = paint(16, 15, g => {
   }
   for (const [x, y] of [[10, 5], [9, 6], [10, 6], [11, 6], [8, 7], [9, 7], [10, 7], [11, 7], [12, 7], [9, 8], [10, 8], [11, 8], [10, 9]]) px(g, '#ffffff', x, y);
 });
+
+// ---------------------------------------------------------------- network portal (animated swirl)
+const PORTAL = [0, 1, 2, 3, 4, 5].map(f => paint(20, 34, g => {
+  const cols = ['#2a0a5a', '#5a1ab8', '#8a4af0', '#c49aff', '#f0e0ff'];
+  for (let y = 0; y < 34; y++) for (let x = 0; x < 20; x++) {
+    const dx = (x + .5 - 10) / 9.5, dy = (y + .5 - 17) / 16.5, d = Math.hypot(dx, dy);
+    if (d > 1) continue;
+    if (d > .86) { px(g, '#1a0638', x, y); continue; }
+    const band = Math.floor((Math.atan2(dy, dx) / (Math.PI * 2) + 1) * 4 + d * 5 - f * 4 / 6);
+    px(g, cols[(band % 4 + 4) % 4 + (d < .28 ? 1 : 0)], x, y);
+  }
+}));
 
 // ---------------------------------------------------------------- scenery
 const CLOUD = blob(56, 28, [[14, 18, 9], [28, 13, 12], [42, 18, 9], [28, 19, 8]],
@@ -395,7 +411,7 @@ function stopMusic() {
   music.gain.gain.linearRampToValueAtTime(0, t + .05);
 }
 function syncMusic() {
-  const want = state === 'play' && !muted && AC && AC.state === 'running';
+  const want = (state === 'play' || state === 'remote') && !muted && AC && AC.state === 'running';
   if (want && !music.on) startMusic(); else if (!want && music.on) stopMusic();
   music.speed = time < 100 ? 1.3 : 1;                 // "hurry up!" when time is low
 }
@@ -414,9 +430,14 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyJ' || (e.code === 'Enter' && state !== 'play')) jQueue = true;
   if (e.code === 'KeyM') muted = !muted;
   if (e.code === 'KeyP' || e.code === 'Escape') togglePause();
+  if (e.code === 'KeyN' && state === 'title') renamePlayer();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
-addEventListener('blur', () => { for (const k in keys) keys[k] = false; if (state === 'play') togglePause(); });
+addEventListener('blur', () => {
+  for (const k in keys) keys[k] = false;
+  if (state === 'play') togglePause();
+  if (state === 'remote') sendTo(NET.host, { t: 'in', l: false, r: false, j: false, jp: NET.seq });
+});
 document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') togglePause(); });
 
 const touchEl = document.getElementById('touch');
@@ -515,6 +536,7 @@ function buildLevel() {
   for (let i = 0; i < 8; i++) stack(186 + i, i + 1, HARD);
   stack(194, 8, HARD);
   setT(FLAGX, 12, HARD);
+  for (const tx of PORTALS) for (let y = 9; y <= 12; y++) setT(tx, y, 0);
 
   // scenery (seeded so it's identical every time)
   let seed = 11;
@@ -584,10 +606,10 @@ try { hiScore = +localStorage.getItem('jumpgame.hi') || 0; } catch (e) {}
 function resetPlayer() {
   const sx = checkpoint ? CHECKPOINT_X * TS : 3 * TS;
   p = { x: sx, y: 12 * TS, w: 12, h: 16, vx: 0, vy: 0, px: sx, py: 12 * TS, onGround: false, face: 1,
-        jumps: 0, coyote: 0, buffer: 0, anim: 0, spin: 0, dead: false, visible: true, phase: 0 };
+        jumps: 0, coyote: 0, buffer: 0, anim: 0, spin: 0, dead: false, visible: true, phase: 0, portalCD: 0, jHeld: false };
   camX = prevCamX = clamp(p.x - VW * .42, 0, LW * TS - VW);
 }
-function startLevel() { buildLevel(); resetPlayer(); time = 300; flagY = 3 * TS; }
+function startLevel() { buildLevel(); resetPlayer(); time = 300; flagY = 3 * TS; if (guest) spawnGuest(); }
 function newGame() { score = 0; coinCount = 0; lives = 3; checkpoint = false; startLevel(); setState('play'); }
 function setState(s) { state = s; stateT = 0; }
 function togglePause() {
@@ -643,12 +665,19 @@ function update(dt) {
   syncMusic();
   prevCamX = camX;
   if (p) { p.px = p.x; p.py = p.y; }
+  if (guest) { guest.px = guest.x; guest.py = guest.y; }
   if (enemies) for (const e of enemies) { e.px = e.x; e.py = e.y; }
+  if (toast && (toast.t -= dt) <= 0) toast = null;
 
   switch (state) {
     case 'title': if (jEdge) newGame(); return;
     case 'over': case 'clear': if (jEdge && stateT > .8) newGame(); updateParts(dt); return;
     case 'paused': if (jEdge) togglePause(); return;
+    case 'porting':
+      updateParts(dt);
+      if (stateT > 4) { setState('play'); showToast('NO ANSWER FROM ' + NET.hostName); NET.host = null; }
+      return;
+    case 'remote': netSendInputs(dt); updateParts(dt); return;
     case 'dying':
       updatePlayer(dt); updateParts(dt);
       if (stateT > 2.6) {
@@ -663,7 +692,7 @@ function update(dt) {
     if (time <= 0) { time = 0; killPlayer(false); }
   }
   updatePlayer(dt);
-  if (state === 'play' || state === 'flag') updateEnemies(dt);
+  if (state === 'play' || state === 'flag') { updateGuest(dt); updateEnemies(dt); }
   updateParts(dt);
   for (const b of bumps) b.t += dt;
   if (bumps.length && bumps.some(b => b.t >= .2)) {
@@ -683,46 +712,76 @@ function updatePlayer(dt) {
   if (state === 'flag') return flagUpdate(dt);
 
   const dir = (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0);
-  if (dir) {
-    p.vx += dir * (p.vx * dir < 0 ? ACC * 2.4 : ACC) * dt;
-    p.face = dir;
-  } else {
-    const d = (p.onGround ? DEC : AIR_DEC) * dt;
-    p.vx = Math.abs(p.vx) <= d ? 0 : p.vx - Math.sign(p.vx) * d;
-  }
-  p.vx = clamp(p.vx, -MAX_VX, MAX_VX);
-
-  // Jump: J on ground = jump; J again in the air = second jump (≈ double height)
-  if (jEdge) p.buffer = .12;
-  p.buffer -= dt; p.coyote -= dt;
-  if (p.buffer > 0) {
-    if (p.onGround || p.coyote > 0) {
-      p.vy = -JUMP_V; p.jumps = 1; p.onGround = false; p.coyote = 0; p.buffer = 0; sfx.jump();
-    } else if (jEdge && p.jumps < 2) {
-      p.vy = -JUMP_V; p.jumps = 2; p.buffer = 0; p.spin = .4; puff(); sfx.djump();
-    }
-  }
-
-  p.vy = Math.min(p.vy + GRAV * dt, MAX_FALL);
-  const wasGround = p.onGround;
-  if (moveX(p, p.vx * dt)) p.vx = 0;
-  p.onGround = false;
-  const hit = moveY(p, p.vy * dt);
-  if (hit) bump(hit.tx, hit.ty);
-  if (p.onGround) p.jumps = 0;
-  else if (wasGround && p.vy >= 0) { p.coyote = .1; p.jumps = 1; }
-
-  p.anim += Math.abs(p.vx) * dt;
-  if (p.spin > 0) p.spin -= dt;
+  p.jHeld = !!keys.KeyJ;
+  heroPhysics(p, dir, jEdge, dt);
 
   if (p.y > LH * TS + 8) killPlayer(true);
   if (p.x > CHECKPOINT_X * TS) checkpoint = true;
   if (p.x + p.w >= FLAGX * TS - 1 && state === 'play') startFlag();
 
-  for (const c of coins) if (!c.got && overlap(p, c)) {
+  collectCoins(p);
+  if (p.portalCD > 0) p.portalCD -= dt;
+  else if (state === 'play') { const pt = portalAt(p); if (pt !== null) enterPortal(pt); }
+}
+
+// Movement + jumping for any hero (the local player or a visiting guest).
+function heroPhysics(h, dir, jumpPressed, dt) {
+  if (dir) {
+    h.vx += dir * (h.vx * dir < 0 ? ACC * 2.4 : ACC) * dt;
+    h.face = dir;
+  } else {
+    const d = (h.onGround ? DEC : AIR_DEC) * dt;
+    h.vx = Math.abs(h.vx) <= d ? 0 : h.vx - Math.sign(h.vx) * d;
+  }
+  h.vx = clamp(h.vx, -MAX_VX, MAX_VX);
+
+  // Jump: J on ground = jump; J again in the air = second jump (≈ double height)
+  if (jumpPressed) h.buffer = .12;
+  h.buffer -= dt; h.coyote -= dt;
+  if (h.buffer > 0) {
+    if (h.onGround || h.coyote > 0) {
+      h.vy = -JUMP_V; h.jumps = 1; h.onGround = false; h.coyote = 0; h.buffer = 0; sfx.jump();
+    } else if (jumpPressed && h.jumps < 2) {
+      h.vy = -JUMP_V; h.jumps = 2; h.buffer = 0; h.spin = .4; puff(h); sfx.djump();
+    }
+  }
+
+  h.vy = Math.min(h.vy + GRAV * dt, MAX_FALL);
+  const wasGround = h.onGround;
+  if (moveX(h, h.vx * dt)) h.vx = 0;
+  h.onGround = false;
+  const hit = moveY(h, h.vy * dt);
+  if (hit) bump(hit.tx, hit.ty);
+  if (h.onGround) h.jumps = 0;
+  else if (wasGround && h.vy >= 0) { h.coyote = .1; h.jumps = 1; }
+
+  h.anim += Math.abs(h.vx) * dt;
+  if (h.spin > 0) h.spin -= dt;
+}
+function collectCoins(h) {
+  for (const c of coins) if (!c.got && overlap(h, c)) {
     c.got = true; addCoin(); addScore(100); sfx.coin(); sparkle(c.x + 5, c.y + 7);
   }
 }
+function portalAt(h) {
+  const cx = h.x + h.w / 2;
+  for (const tx of PORTALS) if (cx > tx * TS + 2 && cx < tx * TS + 14 && h.y + h.h > 11 * TS + 4 && h.y < 13 * TS) return tx;
+  return null;
+}
+function heroes() {
+  const hs = [];
+  if (state === 'play' && !p.dead) hs.push(p);
+  if (guest && !guest.dead) hs.push(guest);
+  return hs;
+}
+// Run fn with the global score/coins/lives swapped for the guest's, so the shared
+// helpers (bump, addScore, addCoin) credit whoever actually did the thing.
+function asGuest(g, fn) {
+  const saved = [score, coinCount, lives];
+  score = g.score; coinCount = g.coins; lives = g.lives;
+  try { fn(); } finally { g.score = score; g.coins = coinCount; g.lives = lives; [score, coinCount, lives] = saved; }
+}
+const credit = (h, fn) => h === p ? fn() : asGuest(h, fn);
 
 function killPlayer(fell) {
   if (p.dead) return;
@@ -770,12 +829,14 @@ function updateEnemies(dt) {
     moveY(e, e.vy * dt);
     e.anim += dt;
     if (e.y > LH * TS + 16) e.dead = true;
-    if (state === 'play' && !p.dead && overlap(p, e)) {
-      if (p.vy > 0 && p.py + p.h <= e.py + 6) {
+    for (const h of heroes()) {
+      if (e.dead || !overlap(h, e)) continue;
+      if (h.vy > 0 && h.py + h.h <= e.py + 6) {
         e.dead = true; e.squash = .45;
-        p.vy = keys.KeyJ ? -JUMP_V : -STOMP_V; p.jumps = 1;
-        addScore(100, e.x, e.y - 10); sfx.stomp();
-      } else killPlayer(false);
+        h.vy = h.jHeld ? -JUMP_V : -STOMP_V; h.jumps = 1;
+        credit(h, () => addScore(100, e.x, e.y - 10)); sfx.stomp();
+      } else if (h === p) killPlayer(false);
+      else guestDie(false);
     }
   }
   // enemies bounce off each other
@@ -821,18 +882,19 @@ function saveHi() { if (score > hiScore) { hiScore = score; try { localStorage.s
 
 // ---------------------------------------------------------------- particles
 let shake = 0;
-function puff() {
+function puff(h) {
   for (let i = 0; i < 10; i++) {
     const a = Math.PI * 2 * i / 10;
-    parts.push({ type: 'puff', x: p.x + p.w / 2, y: p.y + p.h, vx: Math.cos(a) * 90, vy: Math.sin(a) * 30 + 10, life: .35, max: .35 });
+    parts.push({ type: 'puff', x: h.x + h.w / 2, y: h.y + h.h, vx: Math.cos(a) * 90, vy: Math.sin(a) * 30 + 10, life: .35, max: .35 });
   }
 }
-function sparkle(x, y) {
-  for (let i = 0; i < 6; i++) {
-    const a = Math.PI * 2 * i / 6;
-    parts.push({ type: 'spark', x, y, vx: Math.cos(a) * 70, vy: Math.sin(a) * 70, life: .3, max: .3 });
+function sparkle(x, y, col = '#fff6b0', n = 6, speed = 70, life = .3) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.PI * 2 * i / n;
+    parts.push({ type: 'spark', x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, life, max: life, col });
   }
 }
+const portalBurst = (x, y) => { sparkle(x, y, '#c49aff', 16, 110, .6); sparkle(x, y, '#ffffff', 8, 60, .5); };
 function updateParts(dt) {
   for (const q of parts) {
     q.life -= dt;
@@ -895,6 +957,13 @@ function render(alpha) {
   ctx.drawImage(COIN[0], poleX - 7, 2 * TS - 6);
   ctx.drawImage(FLAG, poleX - 16, Math.round(flagY));
 
+  // network portals
+  const pf = PORTAL[Math.floor(gameT * 10) % PORTAL.length];
+  for (const tx of PORTALS) if (tx * TS + 20 > cx && tx * TS - 4 < cx + VW) {
+    ctx.drawImage(pf, tx * TS - 2, 13 * TS - 34);
+    if (Math.floor(gameT * 2) % 2 === 0) drawText('PORTAL', tx * TS + 8, 13 * TS - 46, '#e0c8ff', 'center');
+  }
+
   // tiles: cached static layer (only visible slice is blitted)
   const sx0 = Math.max(0, cx), sw = Math.min(VW, LW * TS - sx0);
   ctx.drawImage(tileLayer, sx0, 0, sw, VH, sx0, 0, sw, VH);
@@ -933,7 +1002,7 @@ function render(alpha) {
     else if (q.type === 'coin') ctx.drawImage(COIN[Math.floor(gameT * 16) % 4], x, y);
     else if (q.type === 'debris') ctx.drawImage(TILE.brick, q.sx, q.sy, 8, 8, x, y, 8, 8);
     else if (q.type === 'puff') { ctx.globalAlpha = q.life / q.max; ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, y - 1, 3, 3); ctx.globalAlpha = 1; }
-    else if (q.type === 'spark') { ctx.globalAlpha = q.life / q.max; ctx.fillStyle = '#fff6b0'; ctx.fillRect(x, y, 2, 2); ctx.globalAlpha = 1; }
+    else if (q.type === 'spark') { ctx.globalAlpha = q.life / q.max; ctx.fillStyle = q.col; ctx.fillRect(x, y, 2, 2); ctx.globalAlpha = 1; }
   }
   ctx.restore();
 
@@ -942,17 +1011,25 @@ function render(alpha) {
 }
 
 function drawPlayer(alpha) {
-  if (!p || !p.visible) return;
+  if (p && p.visible && state !== 'porting' && state !== 'remote') drawHero(p, HERO, alpha);
+  if (guest) {
+    drawHero(guest, HERO2, alpha);
+    const gx = snapX(lerp(guest.px, guest.x, alpha)) + 6, gy = Math.round(lerp(guest.py, guest.y, alpha));
+    drawText(guest.name, gx, gy - 11, '#ff9ccc', 'center');
+  }
+}
+function drawHero(h, set, alpha) {
+  const flagPose = h === p && state === 'flag';
   let spr;
-  if (p.dead || !p.onGround && state !== 'flag') spr = HERO.jump;
-  else if (state === 'flag' && p.phase < 2) spr = HERO.idle;
-  else if (Math.abs(p.vx) > 5) spr = Math.floor(p.anim / 7) % 2 ? HERO.walk2 : HERO.walk1;
-  else spr = HERO.idle;
-  const img = p.face < 0 ? spr.l : spr.r;
-  const x = snapX(lerp(p.px, p.x, alpha)) - 2, y = Math.round(lerp(p.py, p.y, alpha));
-  if (p.spin > 0) {
+  if (h.dead || !h.onGround && !flagPose) spr = set.jump;
+  else if (flagPose && h.phase < 2) spr = set.idle;
+  else if (Math.abs(h.vx) > 5) spr = Math.floor(h.anim / 7) % 2 ? set.walk2 : set.walk1;
+  else spr = set.idle;
+  const img = h.face < 0 ? spr.l : spr.r;
+  const x = snapX(lerp(h.px, h.x, alpha)) - 2, y = Math.round(lerp(h.py, h.y, alpha));
+  if (h.spin > 0) {
     ctx.save(); ctx.translate(x + 8, y + 8);
-    ctx.rotate((1 - p.spin / .4) * Math.PI * 2 * p.face);
+    ctx.rotate((1 - h.spin / .4) * Math.PI * 2 * h.face);
     ctx.drawImage(img, -8, -8); ctx.restore();
   } else ctx.drawImage(img, x, y);
 }
@@ -972,6 +1049,7 @@ function drawHUD() {
   ctx.drawImage(COIN[0], c2 - 3, 15, 12, 12); drawText('x' + pad(coinCount, 2), c2 + 10, 18);
   drawText('TIME', c3, 8); drawText(pad(Math.ceil(time), 3), c3, 18, time < 60 && state === 'play' && Math.floor(gameT * 4) % 2 ? '#ff6050' : '#fff');
   drawText('LIVES', VW - 8, 8, '#fff', 'right'); drawText('x' + lives, VW - 8, 18, '#fff', 'right');
+  if (NET.status === 'online' && NET.peers.size) drawText('ONLINE ' + (NET.peers.size + 1), 8, VH - 14, '#e0c8ff');
 }
 
 function panel(w, h) {
@@ -995,6 +1073,10 @@ function drawOverlay() {
     drawText('J J  DOUBLE JUMP', VW / 2, y + 66, '#fff', 'center');
     if (blink) drawText(startMsg, VW / 2, y + 108, '#fff', 'center');
     if (hiScore) drawText('TOP ' + pad(hiScore, 6), VW / 2, y + 124, '#ffe14a', 'center');
+    const net = NET.status === 'online' ? (NET.peers.size ? (NET.peers.size + 1) + ' PLAYERS ON YOUR NETWORK' : 'ONLY YOU ON YOUR NETWORK')
+              : NET.status === 'offline' ? 'PORTALS OFFLINE' : 'CONNECTING PORTALS...';
+    drawText(net, VW / 2, y + 140, '#e0c8ff', 'center');
+    drawText('YOU: ' + NET.name + (isTouch ? '' : '  (N TO RENAME)'), VW / 2, y + 152, '#ff9ccc', 'center');
   } else if (state === 'paused') {
     ctx.fillStyle = 'rgba(0,0,20,.45)'; ctx.fillRect(0, 0, VW, VH);
     drawText('PAUSED', VW / 2, VH / 2 - 8, '#fff', 'center', 16);
@@ -1009,8 +1091,218 @@ function drawOverlay() {
     drawText('SCORE ' + pad(score, 6), VW / 2, y + 40, '#fff', 'center');
     drawText('TOP   ' + pad(hiScore, 6), VW / 2, y + 54, '#fff', 'center');
     if (blink) drawText(isTouch ? 'TAP J TO PLAY AGAIN' : 'PRESS J TO PLAY AGAIN', VW / 2, y + 100, '#fff', 'center');
+  } else if (state === 'porting' || state === 'remote') {
+    ctx.fillStyle = 'rgba(20,0,50,.6)'; ctx.fillRect(0, 0, VW, VH);
+    const swirl = PORTAL[Math.floor(gameT * 10) % PORTAL.length];
+    ctx.drawImage(swirl, Math.round(VW / 2 - 20), 44, 40, 68);
+    if (state === 'porting') {
+      drawText('PORTING TO', VW / 2, 126, '#e0c8ff', 'center');
+      drawText(NET.hostName, VW / 2, 142, '#ffe14a', 'center', 12);
+    } else {
+      drawText('YOU ARE PLAYING ON', VW / 2, 122, '#e0c8ff', 'center');
+      drawText(NET.hostName + "'S SCREEN", VW / 2, 136, '#ffe14a', 'center', 12);
+      drawText('KEEP USING YOUR CONTROLS HERE', VW / 2, 160, '#fff', 'center');
+      drawText('JUMP IN A PORTAL THERE', VW / 2, 176, '#fff', 'center');
+      drawText('TO COME HOME', VW / 2, 188, '#fff', 'center');
+    }
+  }
+  if (toast) {
+    ctx.font = '8px ' + FONT;
+    const w = Math.ceil(ctx.measureText(toast.s).width) + 16;
+    ctx.fillStyle = 'rgba(20,0,50,.75)'; ctx.fillRect(Math.round((VW - w) / 2), 34, w, 18);
+    drawText(toast.s, VW / 2, 39, '#fff', 'center');
   }
 }
+
+// ============================================================================
+// Network portals. Devices on the same network (same public IPv4 address) join
+// the same room on a public MQTT relay; the IP is only used, hashed, as a room key.
+// Walking into a portal hands your hero to another player's screen, and your own
+// device turns into its controller until you portal back or run out of lives.
+// Add ?room=anything to the URL to group devices that are on different networks.
+// ============================================================================
+const BROKER = 'wss://broker.emqx.io:8084/mqtt';
+const MQTT_LIB = 'https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js';
+const NAME_A = ['RED', 'BLUE', 'GOLD', 'MINT', 'PINK', 'JADE', 'RUBY', 'SKY'];
+const NAME_B = ['FOX', 'OWL', 'CAT', 'FROG', 'BEAR', 'WOLF', 'BEE', 'YAK'];
+const NET = { id: Math.random().toString(36).slice(2, 10), name: '', base: '', client: null, status: 'connecting',
+  peers: new Map(), host: null, hostName: '', portalX: PORTALS[0], seq: 0, lastSent: '', sendT: 0 };
+let guest = null, toast = null;
+const cleanName = n => String(n || '').toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim().slice(0, 10) || 'PLAYER';
+const clampInt = (v, a, b) => clamp(Math.floor(+v || 0), a, b);
+try { NET.name = localStorage.getItem('jumpgame.name') || ''; } catch (e) {}
+if (!NET.name) NET.name = NAME_A[Math.random() * 8 | 0] + ' ' + NAME_B[Math.random() * 8 | 0];
+
+function showToast(msg, t = 2.5) { toast = { s: msg, t }; }
+function renamePlayer() {
+  const n = prompt('Your player name (shown on other screens):', NET.name);
+  for (const k in keys) keys[k] = false;
+  if (!n) return;
+  NET.name = cleanName(n);
+  try { localStorage.setItem('jumpgame.name', NET.name); } catch (e) {}
+  announce();
+}
+
+async function netRoom() {
+  const q = new URLSearchParams(location.search).get('room');
+  if (q) return 'r-' + q.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 32);
+  const { ip } = await (await fetch('https://api.ipify.org?format=json', { cache: 'no-store' })).json();
+  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('jump-game:' + ip));
+  return [...new Uint8Array(h)].slice(0, 10).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const el = document.createElement('script');
+    el.src = src; el.async = true; el.onload = res; el.onerror = rej;
+    document.head.appendChild(el);
+  });
+}
+async function netInit() {
+  try {
+    const [room] = await Promise.all([netRoom(), loadScript(MQTT_LIB)]);
+    NET.base = 'jumpgame/v1/' + room;
+    const c = NET.client = mqtt.connect(BROKER, { clientId: 'jg_' + NET.id, clean: true, reconnectPeriod: 3000, connectTimeout: 8000 });
+    c.on('connect', () => { NET.status = 'online'; c.subscribe([NET.base + '/presence', NET.base + '/to/' + NET.id]); announce(); });
+    c.on('offline', () => { NET.status = 'connecting'; });
+    c.on('message', (topic, buf) => {
+      let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
+      if (m && typeof m === 'object' && typeof m.from === 'string' && m.from !== NET.id) onNet(topic, m);
+    });
+    setInterval(announce, 2000);
+  } catch (e) { NET.status = 'offline'; }
+}
+function netPub(topic, m) { if (NET.client && NET.status === 'online') NET.client.publish(topic, JSON.stringify({ ...m, from: NET.id })); }
+function sendTo(id, m) { if (id) netPub(NET.base + '/to/' + id, m); }
+function announce() {
+  netPub(NET.base + '/presence', { t: 'here', name: NET.name, st: state, g: guest ? 1 : 0 });
+  prunePeers();
+}
+function prunePeers() {
+  const now = performance.now();
+  for (const [id, pr] of NET.peers) {
+    if (now - pr.seen < 6500) continue;
+    NET.peers.delete(id);
+    if (guest && guest.id === id) { showToast(guest.name + ' LEFT'); guest = null; }
+    if ((state === 'remote' || state === 'porting') && NET.host === id) comeHome(null, 'LOST ' + NET.hostName);
+  }
+}
+function onNet(topic, m) {
+  if (topic.endsWith('/presence')) {
+    if (m.t === 'bye') { const pr = NET.peers.get(m.from); if (pr) { pr.seen = -1e9; prunePeers(); } return; }
+    NET.peers.set(m.from, { name: cleanName(m.name), st: String(m.st), g: !!m.g, seen: performance.now() });
+    return;
+  }
+  const fromHost = m.from === NET.host && (state === 'remote' || state === 'porting');
+  const fromGuest = guest && guest.id === m.from;
+  switch (m.t) {
+    case 'port': receivePort(m); break;
+    case 'accept': if (fromHost && state === 'porting') { setState('remote'); NET.hostName = cleanName(m.name); sfx.djump(); } break;
+    case 'busy': if (fromHost) { NET.host = null; setState('play'); showToast(NET.hostName + ' IS BUSY'); } break;
+    case 'gstate': if (fromHost) applyStats(m); break;
+    case 'home': if (fromHost) comeHome(m, m.reason === 'out' ? 'OUT OF LIVES!' : 'WELCOME HOME!'); break;
+    case 'in':
+      if (!fromGuest) break;
+      guest.keys.l = !!m.l; guest.keys.r = !!m.r; guest.keys.j = !!m.j; guest.seen = performance.now();
+      if (+m.jp > guest.jp) { guest.jp = +m.jp; guest.jQueue = true; }
+      break;
+    case 'leave': if (fromGuest) { showToast(guest.name + ' WENT HOME'); guest = null; } break;
+  }
+}
+function applyStats(m) { score = clampInt(m.score, 0, 9999999); coinCount = clampInt(m.coins, 0, 99); lives = clampInt(m.lives, 0, 99); }
+
+// ---- this device walks into a portal
+function enterPortal(tx) {
+  p.portalCD = 2;
+  if (NET.status !== 'online') { showToast(NET.status === 'offline' ? 'PORTAL OFFLINE' : 'PORTAL WARMING UP...'); return; }
+  const free = [...NET.peers].filter(([, pr]) => !pr.g && pr.st !== 'remote' && pr.st !== 'porting');
+  if (!free.length) { showToast('NO ONE ELSE ON YOUR NETWORK'); return; }
+  const playing = free.filter(([, pr]) => pr.st === 'play');
+  const pool = playing.length ? playing : free;
+  const [id, pr] = pool[Math.random() * pool.length | 0];
+  NET.host = id; NET.hostName = pr.name; NET.portalX = tx; NET.lastSent = '';
+  sendTo(id, { t: 'port', name: NET.name, score, coins: coinCount, lives });
+  portalBurst(p.x + p.w / 2, p.y + p.h / 2);
+  setState('porting'); sfx.flag();
+}
+function netSendInputs(dt) {
+  const l = !!keys.ArrowLeft, r = !!keys.ArrowRight, j = !!keys.KeyJ;
+  if (jEdge) NET.seq++;
+  const sig = '' + l + r + j + NET.seq;
+  NET.sendT -= dt;
+  if (sig !== NET.lastSent || NET.sendT <= 0) {           // send on change + a steady keep-alive
+    sendTo(NET.host, { t: 'in', l, r, j, jp: NET.seq });
+    NET.lastSent = sig; NET.sendT = .2;
+  }
+}
+function comeHome(m, msg) {
+  if (m) applyStats(m);
+  NET.host = null;
+  showToast(msg);
+  if (lives <= 0) { saveHi(); setState('over'); sfx.over(); return; }
+  setState('play');
+  Object.assign(p, { x: NET.portalX * TS + 18, y: 12 * TS, vx: 0, vy: 0, dead: false, visible: true, portalCD: 2, spin: .4 });
+  p.px = p.x; p.py = p.y;
+  camX = prevCamX = clamp(p.x - VW * .42, 0, LW * TS - VW);
+  portalBurst(NET.portalX * TS + 8, 12 * TS);
+  sfx.oneup();
+}
+
+// ---- another device's hero arrives on this screen
+function receivePort(m) {
+  if ((guest && guest.id !== m.from) || state === 'remote' || state === 'porting') { sendTo(m.from, { t: 'busy' }); return; }
+  if (!['play', 'flag', 'paused', 'dying'].includes(state)) newGame();
+  guest = { id: m.from, name: cleanName(m.name), score: clampInt(m.score, 0, 9999999), coins: clampInt(m.coins, 0, 99),
+            lives: clampInt(m.lives, 1, 99), keys: { l: false, r: false, j: false }, jp: 0, jQueue: false, sendT: 0 };
+  spawnGuest();
+  sendTo(m.from, { t: 'accept', name: NET.name });
+  showToast(guest.name + ' PORTED IN!'); sfx.oneup();
+}
+function spawnGuest() {
+  const g = guest;
+  const tx = clamp(Math.floor((p.x + p.w / 2) / TS) + 2, Math.ceil(camX / TS) + 1, Math.floor((camX + VW) / TS) - 2);
+  Object.assign(g, { x: tx * TS + 2, y: -20, w: 12, h: 16, vx: 0, vy: 0, onGround: false, face: -1, jumps: 2, coyote: 0,
+                     buffer: 0, anim: 0, spin: .4, dead: false, deadT: 0, jHeld: false, portalCD: 2, seen: performance.now() });
+  g.px = g.x; g.py = g.y;
+  portalBurst(g.x + 6, 10);
+}
+function updateGuest(dt) {
+  const g = guest;
+  if (!g) return;
+  if (g.dead) {
+    g.vy = Math.min(g.vy + GRAV * dt, MAX_FALL * 1.5); g.y += g.vy * dt;
+    if ((g.deadT -= dt) <= 0) { if (g.lives > 0) spawnGuest(); else sendGuestHome('out'); }
+    return;
+  }
+  if (performance.now() - g.seen > 1500) g.keys.l = g.keys.r = g.keys.j = false;   // controller went quiet
+  const dir = (g.keys.r ? 1 : 0) - (g.keys.l ? 1 : 0);
+  const jump = g.jQueue; g.jQueue = false; g.jHeld = g.keys.j;
+  asGuest(g, () => { heroPhysics(g, dir, jump, dt); collectCoins(g); });
+  if (state === 'play') {                                   // keep the guest on the host's screen
+    if (g.x < camX) { g.x = camX; g.vx = Math.max(0, g.vx); }
+    else if (g.x > camX + VW - g.w) { g.x = camX + VW - g.w; g.vx = Math.min(0, g.vx); }
+  }
+  if (g.y > LH * TS + 8) guestDie(true);
+  if (g.portalCD > 0) g.portalCD -= dt;
+  else if (portalAt(g) !== null) { portalBurst(g.x + 6, g.y + 8); sendGuestHome('portal'); return; }
+  if ((g.sendT -= dt) <= 0) { g.sendT = .25; sendTo(g.id, { t: 'gstate', score: g.score, coins: g.coins, lives: g.lives }); }
+}
+function guestDie(fell) {
+  const g = guest;
+  if (!g || g.dead) return;
+  g.dead = true; g.lives--; g.vx = 0; g.vy = fell ? 0 : -400; g.spin = 0; g.deadT = 1.6;
+  sfx.bump();
+}
+function sendGuestHome(reason) {
+  const g = guest;
+  sendTo(g.id, { t: 'home', reason, score: g.score, coins: g.coins, lives: g.lives });
+  showToast(g.name + (reason === 'out' ? ' IS OUT!' : ' WENT HOME'));
+  guest = null;
+}
+addEventListener('pagehide', () => {
+  if (guest) sendGuestHome('portal');
+  if (state === 'remote' || state === 'porting') sendTo(NET.host, { t: 'leave' });
+  netPub(NET.base + '/presence', { t: 'bye' });
+});
 
 // ============================================================================
 // Main loop: fixed timestep + accumulator + interpolation
@@ -1030,6 +1322,7 @@ setState('title');
 const fontReady = document.fonts ? Promise.race([document.fonts.load('8px "Press Start 2P"'), new Promise(r => setTimeout(r, 1500))]) : Promise.resolve();
 fontReady.finally(() => { last = performance.now(); requestAnimationFrame(frame); });
 cvs.focus();
+netInit();
 </script>
 </body>
 </html>
